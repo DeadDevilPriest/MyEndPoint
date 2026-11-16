@@ -1,5 +1,5 @@
 <?php
-    $erlaubteOperationen = ['get', 'post', 'update', 'delete'];
+    $erlaubteOperationen = ['GET', 'POST', 'UPDATE', 'DELETE'];
 ?>
 <!DOCTYPE html>
 <html lang="de">
@@ -14,16 +14,13 @@
         input[type=text], input[type=number], select { width: 100%; padding: .4rem; box-sizing: border-box; }
         .radios label { display: inline-block; font-weight: normal; margin-right: 1rem; }
         button { margin-top: 1rem; padding: .5rem 1.2rem; }
-        .fehler { color: #b00020; }
-        table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
-        td, th { border: 1px solid #ccc; padding: .4rem; text-align: left; }
     </style>
 </head>
 <body>
 
 <h1>Fahrzeug erfassen</h1>
 
-<form method="post" action="../MyEndPoint/api.php">
+<form method="post" action="../MyEndPoint/api">
     <fieldset>
         <label for="fahrzeug-name">Name</label>
         <input type="text" id="fahrzeug-name" name="fahrzeug-name" required>
@@ -43,7 +40,7 @@
         <div class="radios">
             <?php foreach ($erlaubteOperationen as $op): ?>
                 <label for="<?= $op ?>">
-                    <input type="radio" id="<?= $op ?>" name="operation[]" value="<?= $op ?>">
+                    <input type="radio" id="<?= $op ?>" name="operation" value="<?= $op ?>" required>
                     <?= strtoupper($op) ?>
                 </label>
             <?php endforeach; ?>

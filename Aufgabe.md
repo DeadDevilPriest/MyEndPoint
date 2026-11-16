@@ -20,7 +20,7 @@
 
 ## Methode
 ### HTTP  Befehl http://adresse/api?{parameter}
-### HTTP POST http://localhost/MyEndPoint?{$fahrzeugName,$fahrzeugType,$fahrzeugLeistung,$operation}
+### HTTP POST http://localhost/MyEndPoint/api.php?{$fahrzeugName,$fahrzeugType,$fahrzeugLeistung}
 # Aufgabe
 Client soll auf MyEndPoint zugreifen. MyEndPoint soll die Anfrage auseinander nehmen und die Befehle GET, POST, PUSH, 
 PULL bzw. INSERT, UPDATE, GET, DELETE erkennen und ausführen.
