@@ -1,3 +1,11 @@
-﻿RewriteEngine On
+﻿# Optional: URLs ohne "api.php"
+#   http://localhost/MyEndPoint/api/fahrzeuge/5  →  wird von api.php beantwortet
+#   http://localhost/MyEndPoint/fahrzeuge/5      →  ebenso
+# Braucht mod_rewrite (bei XAMPP aktiv). Ohne diese Datei funktioniert
+#   http://localhost/MyEndPoint/api.php/fahrzeuge/5
+# ganz normal weiter. Vorhandene Dateien (z. B. formular.html) bleiben erreichbar.
+
+RewriteEngine On
 RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ api.php [QSA,L]

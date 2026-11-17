@@ -1,0 +1,4 @@
+﻿class fahrzeug() {
+    public $marke;
+    
+}
