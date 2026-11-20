@@ -8,8 +8,26 @@ info:
     Jede freigegebene Tabelle ist eine **Ressource** mit denselben Operationen:
     auflisten, holen, anlegen, ändern und löschen.
 
-    > **Ausprobieren:** Bei jeder Operation Werte eintragen und **Execute** drücken.
+    > **Ausprobieren:** Zuerst oben rechts auf **Authorize** klicken und den eigenen API-Schlüssel eintragen.
+    > Dann bei jeder Operation Werte eintragen und **Execute** drücken.
     > Die Anfragen gehen wirklich an die API – POST, PUT, PATCH und DELETE ändern die Datenbank.
+
+    ## Anmeldung und Rollen
+
+    Jede Anfrage braucht einen **API-Schlüssel** im Header `X-API-Key`.
+    Die Konten stehen in einer eigenen Datenbank `benutzerverwaltung`, getrennt von den Fahrzeugdaten
+    (Tabelle `benutzer`, anlegen mit `benutzer.sql`). Gespeichert wird nur die SHA-256-Prüfsumme
+    des Schlüssels. Welche Rolle ein Konto hat, steht in der Datenbank –
+    der Client schickt nur den Schlüssel mit, nie die Rolle.
+
+    | Rolle | darf |
+    |---|---|
+    | `nutzer` | nur lesen: GET |
+    | `admin` | alles: GET, POST, PUT, PATCH, DELETE |
+
+    * Kein oder falscher Schlüssel → `401`
+    * Schlüssel gültig, aber die Rolle darf diese Methode nicht → `403`
+    * `GET api.php` meldet unter `angemeldet`, wer man ist und was man darf.
 
     ## Aufbau der URLs
 
@@ -58,6 +76,7 @@ info:
     * Header `X-HTTP-Method-Override` (für Clients ohne PUT/DELETE)
 
     Steht keine ID in der URL, liest die API sie aus dem Feld, das wie der Primärschlüssel heißt (z. B. `FID`).
+    Den API-Schlüssel kann ein Formular nicht als Header schicken – ersatzweise geht das Feld `_api_key`.
 
     ## Antworten und Fehler
 
@@ -70,12 +89,15 @@ info:
     | 201 | angelegt |
     | 204 | Antwort auf OPTIONS (CORS-Vorabanfrage) |
     | 400 | ungültige Eingabe, ungültiger Filter oder ungültiges JSON |
+    | 401 | nicht angemeldet: kein oder falscher API-Schlüssel |
+    | 403 | angemeldet, aber die Rolle darf das nicht |
     | 404 | Ressource oder Datensatz nicht gefunden |
     | 405 | Methode an dieser Adresse nicht erlaubt |
     | 409 | Konflikt: doppelter Wert oder Eintrag wird noch verwendet |
     | 500 | Serverfehler, z. B. Datenbank nicht erreichbar |
 
-    CORS ist offen (`Access-Control-Allow-Origin: *`). Es gibt **keine Anmeldung** – die API nur lokal betreiben.
+    CORS ist offen (`Access-Control-Allow-Origin: *`). Der Schlüssel geht bei `http://` unverschlüsselt
+    über das Netz – außerhalb von localhost nur mit `https://` betreiben.
 
     Datentypen und Pflichtfelder in dieser Doku entsprechen der Tabellenstruktur beim Schreiben der Doku.
     Maßgeblich ist immer die Übersicht `GET api.php`, denn die API liest die Spalten selbst aus der Datenbank.
@@ -94,6 +116,10 @@ servers:
       ordner:
         default: MyEndPoint
         description: Ordner unter htdocs
+
+# Jede Operation braucht den API-Schlüssel (siehe components.securitySchemes)
+security:
+  - ApiKey: []
 
 tags:
   - name: Übersicht
@@ -128,6 +154,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Uebersicht'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
 
@@ -180,6 +208,8 @@ paths:
                 $ref: '#/components/schemas/FahrzeugListe'
         '400':
           $ref: '#/components/responses/UngueltigeParameter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
     post:
@@ -201,6 +231,10 @@ paths:
                 $ref: '#/components/schemas/Fahrzeug'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '409':
           $ref: '#/components/responses/Konflikt'
         '500':
@@ -227,6 +261,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fahrzeug'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -243,6 +279,10 @@ paths:
           $ref: '#/components/responses/FahrzeugGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -261,6 +301,10 @@ paths:
           $ref: '#/components/responses/FahrzeugGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -284,6 +328,10 @@ paths:
                     example: Datensatz "1" wurde gelöscht.
                   geloescht:
                     $ref: '#/components/schemas/Fahrzeug'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -313,6 +361,8 @@ paths:
                 $ref: '#/components/schemas/FahrzeugtypListe'
         '400':
           $ref: '#/components/responses/UngueltigeParameter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
     post:
@@ -333,6 +383,10 @@ paths:
                 $ref: '#/components/schemas/Fahrzeugtyp'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '409':
           $ref: '#/components/responses/Konflikt'
         '500':
@@ -359,6 +413,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fahrzeugtyp'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -375,6 +431,10 @@ paths:
           $ref: '#/components/responses/FahrzeugtypGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -393,6 +453,10 @@ paths:
           $ref: '#/components/responses/FahrzeugtypGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -417,6 +481,10 @@ paths:
                     example: Datensatz "1" wurde gelöscht.
                   geloescht:
                     $ref: '#/components/schemas/Fahrzeugtyp'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -448,6 +516,8 @@ paths:
                 $ref: '#/components/schemas/FahrzeugartListe'
         '400':
           $ref: '#/components/responses/UngueltigeParameter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
     post:
@@ -468,6 +538,10 @@ paths:
                 $ref: '#/components/schemas/Fahrzeugart'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '409':
           $ref: '#/components/responses/Konflikt'
         '500':
@@ -494,6 +568,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fahrzeugart'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -510,6 +586,10 @@ paths:
           $ref: '#/components/responses/FahrzeugartGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -528,6 +608,10 @@ paths:
           $ref: '#/components/responses/FahrzeugartGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -552,6 +636,10 @@ paths:
                     example: Datensatz "1" wurde gelöscht.
                   geloescht:
                     $ref: '#/components/schemas/Fahrzeugart'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -583,6 +671,8 @@ paths:
                 $ref: '#/components/schemas/TreibstoffListe'
         '400':
           $ref: '#/components/responses/UngueltigeParameter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
     post:
@@ -603,6 +693,10 @@ paths:
                 $ref: '#/components/schemas/Treibstoff'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '409':
           $ref: '#/components/responses/Konflikt'
         '500':
@@ -629,6 +723,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Treibstoff'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -645,6 +741,10 @@ paths:
           $ref: '#/components/responses/TreibstoffGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -663,6 +763,10 @@ paths:
           $ref: '#/components/responses/TreibstoffGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -687,6 +791,10 @@ paths:
                     example: Datensatz "1" wurde gelöscht.
                   geloescht:
                     $ref: '#/components/schemas/Treibstoff'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -728,6 +836,8 @@ paths:
                 $ref: '#/components/schemas/FahrzeughalterListe'
         '400':
           $ref: '#/components/responses/UngueltigeParameter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '500':
           $ref: '#/components/responses/Serverfehler'
     post:
@@ -748,6 +858,10 @@ paths:
                 $ref: '#/components/schemas/Fahrzeughalter'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '409':
           $ref: '#/components/responses/Konflikt'
         '500':
@@ -774,6 +888,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Fahrzeughalter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '500':
@@ -790,6 +906,10 @@ paths:
           $ref: '#/components/responses/FahrzeughalterGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -808,6 +928,10 @@ paths:
           $ref: '#/components/responses/FahrzeughalterGeaendert'
         '400':
           $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -832,6 +956,10 @@ paths:
                     example: Datensatz "1" wurde gelöscht.
                   geloescht:
                     $ref: '#/components/schemas/Fahrzeughalter'
+        '401':
+          $ref: '#/components/responses/NichtAngemeldet'
+        '403':
+          $ref: '#/components/responses/KeineBerechtigung'
         '404':
           $ref: '#/components/responses/NichtGefunden'
         '409':
@@ -841,6 +969,16 @@ paths:
 
 
 components:
+
+  # ── Anmeldung ────────────────────────────────────────────────────
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Persönlicher API-Schlüssel (Konten in der Datenbank `benutzerverwaltung`, Tabelle `benutzer`).
+        Rolle `nutzer` darf nur lesen (GET), Rolle `admin` alles.
 
   # ── Wiederverwendete Parameter für Listen ────────────────────────
   parameters:
@@ -1031,6 +1169,24 @@ components:
             details:
               - limit muss eine ganze Zahl von 1 bis 1000 sein.
               - Unbekannte Sortierspalte "ps".
+    NichtAngemeldet:
+      description: Nicht angemeldet – kein oder falscher API-Schlüssel im Header `X-API-Key`
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: 'Nicht angemeldet: gültigen API-Schlüssel im Header X-API-Key mitschicken.'
+    KeineBerechtigung:
+      description: Angemeldet, aber die eigene Rolle darf diese Methode nicht (z. B. `nutzer` will ändern)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Die Rolle "nutzer" darf kein POST.
+            details:
+              - 'Erlaubt: GET'
     NichtGefunden:
       description: Datensatz nicht gefunden
       content:
@@ -1278,6 +1434,23 @@ components:
     Uebersicht:
       type: object
       properties:
+        angemeldet:
+          type: object
+          description: Das eigene Konto und was seine Rolle darf
+          properties:
+            name:
+              type: string
+              example: Test Nutzer
+            rolle:
+              type: string
+              example: nutzer
+            darf:
+              type: array
+              description: Erlaubte HTTP-Methoden
+              items:
+                type: string
+                enum: [GET, POST, PUT, PATCH, DELETE]
+              example: [GET]
         ressourcen:
           type: object
           description: Schlüssel = Name der Ressource in der URL
@@ -1293,6 +1466,10 @@ components:
                 additionalProperties:
                   $ref: '#/components/schemas/Feldinfo'
       example:
+        angemeldet:
+          name: Test Nutzer
+          rolle: nutzer
+          darf: [GET]
         ressourcen:
           fahrzeugtypen:
             url: http://localhost/MyEndPoint/api.php/fahrzeugtypen
