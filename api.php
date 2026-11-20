@@ -41,11 +41,12 @@ declare(strict_types=1);
  *  Beim Speichern wird geprüft, ob es den Eintrag gibt; beim Löschen, ob er
  *  noch verwendet wird.
  *
- *  Anmeldung: Jede Anfrage braucht einen API-Schlüssel im Header X-API-Key
- *  (bei HTML-Formularen ersatzweise im Feld _api_key). Die Konten stehen in
- *  einer eigenen Datenbank, getrennt von den Fahrzeugdaten (benutzerverwaltung,
- *  Tabelle benutzer – anlegen mit benutzer.sql). Was eine Rolle darf, steht
- *  unten in ROLLEN. Kein gültiger Schlüssel → 401, Rolle darf das nicht → 403.
+ *  Anmeldung: Jede Anfrage schickt E-Mail (oder Benutzername) und Passwort per
+ *  HTTP Basic Auth mit (Header "Authorization: Basic …"; bei HTML-Formularen
+ *  ersatzweise die Felder _email und _passwort). Die Konten stehen in einer
+ *  eigenen Datenbank, getrennt von den Fahrzeugdaten (siehe AUTH_DSN und
+ *  benutzer.sql), die Passwörter nur als Hash von password_hash(). Was eine Rolle
+ *  darf, steht unten in ROLLEN. Falsch/fehlt → 401, Rolle darf das nicht → 403.
  *
  *  Antwort immer JSON. Bei Fehlern: {"fehler": "...", "details": [...]}
  *  Voraussetzung: PHP 8.1 oder neuer.
@@ -82,13 +83,15 @@ const RESSOURCEN = [
 
 // Konten für die Anmeldung – in einer eigenen, getrennten Datenbank.
 // Die Fahrzeug-Verbindung db() kommt dadurch gar nicht an die Konten heran.
+// Hier den Namen DEINER Konten-Datenbank (dbname=…) und DEINER Tabelle eintragen.
+// Spalten der Tabelle: IID, username, useremail, password (Hash!), rolle – siehe benutzer.sql.
 // Tipp: Hier reicht ein eigener MySQL-Benutzer, der in dieser Datenbank nur SELECT darf.
 const AUTH_DSN     = 'mysql:host=127.0.0.1;dbname=benutzerverwaltung;charset=utf8mb4';
 const AUTH_USER    = 'root';
 const AUTH_PASS    = '';
 const TBL_BENUTZER = 'benutzer';
 
-// Was darf welche Rolle? Die Rolle steht beim Konto in der Tabelle benutzer.
+// Was darf welche Rolle? Die Rolle steht beim Konto in der Spalte rolle.
 // Eine neue Rolle = eine Zeile ergänzen. Unbekannte Rollen dürfen nichts.
 const ROLLEN = [
     'nutzer' => ['GET'],                                     // nur lesen
@@ -307,13 +310,38 @@ function authDb(): PDO
     return $pdo;
 }
 
-// Sucht das Konto zum API-Schlüssel. In der Tabelle steht nur die SHA-256-Prüfsumme
-// des Schlüssels, nie der Schlüssel selbst. Ergebnis: ['Name' => …, 'Rolle' => …] oder null.
-function benutzerFinden(string $schluessel): ?array
+// Liest E-Mail (oder Benutzername) und Passwort aus HTTP Basic Auth ("Authorization: Basic …").
+// Mit mod_php (XAMPP) füllt PHP selbst PHP_AUTH_USER/PHP_AUTH_PW. Läuft PHP als FastCGI,
+// reicht die .htaccess den Header als HTTP_AUTHORIZATION durch – dann zerlegen wir ihn selbst.
+// HTML-Formulare können keine Header setzen: ersatzweise die Felder _email und _passwort.
+function zugangsdaten(array $daten): array
+{
+    if (isset($_SERVER['PHP_AUTH_USER'])) {
+        return [(string) $_SERVER['PHP_AUTH_USER'], (string) ($_SERVER['PHP_AUTH_PW'] ?? '')];
+    }
+    $kopf = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+    if (preg_match('/^Basic\s+(\S+)$/i', $kopf, $treffer)) {
+        $klartext = base64_decode($treffer[1], true);         // "max@test.com:geheim"
+        if ($klartext !== false && str_contains($klartext, ':')) {
+            return explode(':', $klartext, 2);                // am ersten ":" trennen
+        }
+    }
+    $login    = $daten['_email'] ?? '';
+    $passwort = $daten['_passwort'] ?? '';
+    return [is_string($login) ? $login : '', is_string($passwort) ? $passwort : ''];
+}
+
+// Prüft E-Mail (oder Benutzername) und Passwort. In der Spalte password steht ein Hash von
+// password_hash(), nie das Passwort selbst – password_verify() vergleicht beides.
+// Ergebnis: ['Name' => …, 'Email' => …, 'Rolle' => …] oder null.
+function anmelden(string $login, string $passwort): ?array
 {
     try {
-        $abfrage = authDb()->prepare('SELECT Name, Rolle FROM ' . bezeichner(TBL_BENUTZER) . ' WHERE Schluessel = ?');
-        $abfrage->execute([hash('sha256', $schluessel)]);
+        $abfrage = authDb()->prepare(
+            'SELECT username AS Name, useremail AS Email, rolle AS Rolle, password AS Hash FROM '
+            . bezeichner(TBL_BENUTZER) . ' WHERE useremail = ? OR username = ?'
+        );
+        $abfrage->execute([$login, $login]);
     } catch (PDOException $e) {
         // Beim Verbinden steht die MySQL-Fehlernummer in getCode(), bei Abfragen in errorInfo
         $nummer = (int) ($e->errorInfo[1] ?? $e->getCode());
@@ -324,8 +352,21 @@ function benutzerFinden(string $schluessel): ?array
         }
         throw $e;
     }
+
     $konto = $abfrage->fetch();
-    return $konto === false ? null : $konto;
+    if ($konto === false) {
+        return null;
+    }
+    if (!password_verify($passwort, $konto['Hash'])) {
+        // Hilfe beim Einrichten (nur mit API_DEBUG): Steht noch ein Klartext-Passwort in der Tabelle?
+        if (API_DEBUG && password_get_info($konto['Hash'])['algoName'] === 'unknown') {
+            fehler(401, 'Nicht angemeldet: E-Mail oder Passwort falsch.',
+                   ['Das Passwort dieses Kontos ist nicht mit password_hash() gespeichert – siehe benutzer.sql.']);
+        }
+        return null;
+    }
+    unset($konto['Hash']);   // den Hash nie weitergeben
+    return $konto;
 }
 
 
@@ -631,7 +672,7 @@ header('Content-Type: application/json; charset=UTF-8');
 // CORS: erlaubt Aufrufe per JavaScript von anderen Adressen/Ports (z. B. localhost:5173)
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override, X-API-Key');
+header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override, Authorization');
 header('Access-Control-Expose-Headers: Location');
 
 // 6b) Route aus der URL lesen
@@ -680,12 +721,13 @@ if ($methode === 'POST') {
 }
 
 // 6d) Anmeldung: Wer fragt (sonst 401), und darf seine Rolle diese Methode (sonst 403)?
-//     Der Schlüssel kommt im Header X-API-Key – bei HTML-Formularen ersatzweise im Feld _api_key.
+//     E-Mail (oder Benutzername) und Passwort kommen per HTTP Basic Auth.
 //     Die Rolle schickt der Client NICHT mit: Die steht beim Konto in der Datenbank.
-$schluessel = $_SERVER['HTTP_X_API_KEY'] ?? $daten['_api_key'] ?? '';
-$konto      = is_string($schluessel) && trim($schluessel) !== '' ? benutzerFinden(trim($schluessel)) : null;
+//     Absichtlich ohne "WWW-Authenticate"-Header – sonst öffnet der Browser sein eigenes Login-Fenster.
+[$login, $passwort] = zugangsdaten($daten);
+$konto = trim($login) !== '' && $passwort !== '' ? anmelden(trim($login), $passwort) : null;
 if ($konto === null) {
-    fehler(401, 'Nicht angemeldet: gültigen API-Schlüssel im Header X-API-Key mitschicken.');
+    fehler(401, 'Nicht angemeldet: E-Mail oder Passwort falsch.');
 }
 $rechte = ROLLEN[$konto['Rolle']] ?? [];
 if (!in_array($methode, $rechte, true)) {
@@ -706,7 +748,12 @@ if ($ressource === '') {
         $uebersicht[$name] = ['url' => "$apiUrl/$name", 'felder' => spalten($tabelle)];
     }
     antwort(200, [
-        'angemeldet' => ['name' => $konto['Name'], 'rolle' => $konto['Rolle'], 'darf' => $rechte],
+        'angemeldet' => [
+            'name'  => $konto['Name'],
+            'email' => $konto['Email'],
+            'rolle' => $konto['Rolle'],
+            'darf'  => $rechte,
+        ],
         'ressourcen' => $uebersicht,
     ]);
 }

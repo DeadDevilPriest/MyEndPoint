@@ -8,25 +8,27 @@ info:
     Jede freigegebene Tabelle ist eine **Ressource** mit denselben Operationen:
     auflisten, holen, anlegen, ändern und löschen.
 
-    > **Ausprobieren:** Zuerst oben rechts auf **Authorize** klicken und den eigenen API-Schlüssel eintragen.
+    > **Ausprobieren:** Zuerst oben rechts auf **Authorize** klicken und unter *Username* die E-Mail
+    > (oder den Benutzernamen) und unter *Password* das Passwort eintragen.
     > Dann bei jeder Operation Werte eintragen und **Execute** drücken.
     > Die Anfragen gehen wirklich an die API – POST, PUT, PATCH und DELETE ändern die Datenbank.
 
     ## Anmeldung und Rollen
 
-    Jede Anfrage braucht einen **API-Schlüssel** im Header `X-API-Key`.
-    Die Konten stehen in einer eigenen Datenbank `benutzerverwaltung`, getrennt von den Fahrzeugdaten
-    (Tabelle `benutzer`, anlegen mit `benutzer.sql`). Gespeichert wird nur die SHA-256-Prüfsumme
-    des Schlüssels. Welche Rolle ein Konto hat, steht in der Datenbank –
-    der Client schickt nur den Schlüssel mit, nie die Rolle.
+    Jede Anfrage schickt **E-Mail (oder Benutzername) und Passwort** per HTTP Basic Auth mit:
+    Header `Authorization: Basic <Base64 von "email:passwort">`.
+    Die Konten stehen in einer eigenen Datenbank, getrennt von den Fahrzeugdaten
+    (Spalten `username`, `useremail`, `password`, `rolle` – anlegen mit `benutzer.sql`).
+    Passwörter stehen dort nur als Hash von `password_hash()`. Welche Rolle ein Konto hat,
+    steht in der Datenbank – der Client schickt nur seine Anmeldedaten mit, nie die Rolle.
 
     | Rolle | darf |
     |---|---|
     | `nutzer` | nur lesen: GET |
     | `admin` | alles: GET, POST, PUT, PATCH, DELETE |
 
-    * Kein oder falscher Schlüssel → `401`
-    * Schlüssel gültig, aber die Rolle darf diese Methode nicht → `403`
+    * Anmeldedaten fehlen oder sind falsch → `401`
+    * Anmeldung stimmt, aber die Rolle darf diese Methode nicht → `403`
     * `GET api.php` meldet unter `angemeldet`, wer man ist und was man darf.
 
     ## Aufbau der URLs
@@ -76,7 +78,7 @@ info:
     * Header `X-HTTP-Method-Override` (für Clients ohne PUT/DELETE)
 
     Steht keine ID in der URL, liest die API sie aus dem Feld, das wie der Primärschlüssel heißt (z. B. `FID`).
-    Den API-Schlüssel kann ein Formular nicht als Header schicken – ersatzweise geht das Feld `_api_key`.
+    Die Anmeldung kann ein Formular nicht als Header schicken – ersatzweise gehen die Felder `_email` und `_passwort`.
 
     ## Antworten und Fehler
 
@@ -89,15 +91,15 @@ info:
     | 201 | angelegt |
     | 204 | Antwort auf OPTIONS (CORS-Vorabanfrage) |
     | 400 | ungültige Eingabe, ungültiger Filter oder ungültiges JSON |
-    | 401 | nicht angemeldet: kein oder falscher API-Schlüssel |
+    | 401 | nicht angemeldet: E-Mail oder Passwort fehlt bzw. falsch |
     | 403 | angemeldet, aber die Rolle darf das nicht |
     | 404 | Ressource oder Datensatz nicht gefunden |
     | 405 | Methode an dieser Adresse nicht erlaubt |
     | 409 | Konflikt: doppelter Wert oder Eintrag wird noch verwendet |
     | 500 | Serverfehler, z. B. Datenbank nicht erreichbar |
 
-    CORS ist offen (`Access-Control-Allow-Origin: *`). Der Schlüssel geht bei `http://` unverschlüsselt
-    über das Netz – außerhalb von localhost nur mit `https://` betreiben.
+    CORS ist offen (`Access-Control-Allow-Origin: *`). Base64 ist keine Verschlüsselung: Das Passwort
+    geht bei `http://` lesbar über das Netz – außerhalb von localhost nur mit `https://` betreiben.
 
     Datentypen und Pflichtfelder in dieser Doku entsprechen der Tabellenstruktur beim Schreiben der Doku.
     Maßgeblich ist immer die Übersicht `GET api.php`, denn die API liest die Spalten selbst aus der Datenbank.
@@ -117,9 +119,9 @@ servers:
         default: MyEndPoint
         description: Ordner unter htdocs
 
-# Jede Operation braucht den API-Schlüssel (siehe components.securitySchemes)
+# Jede Operation braucht eine Anmeldung (siehe components.securitySchemes)
 security:
-  - ApiKey: []
+  - BasicAuth: []
 
 tags:
   - name: Übersicht
@@ -972,12 +974,11 @@ components:
 
   # ── Anmeldung ────────────────────────────────────────────────────
   securitySchemes:
-    ApiKey:
-      type: apiKey
-      in: header
-      name: X-API-Key
+    BasicAuth:
+      type: http
+      scheme: basic
       description: |
-        Persönlicher API-Schlüssel (Konten in der Datenbank `benutzerverwaltung`, Tabelle `benutzer`).
+        Username = E-Mail oder Benutzername, Password = Passwort des Kontos.
         Rolle `nutzer` darf nur lesen (GET), Rolle `admin` alles.
 
   # ── Wiederverwendete Parameter für Listen ────────────────────────
@@ -1170,13 +1171,13 @@ components:
               - limit muss eine ganze Zahl von 1 bis 1000 sein.
               - Unbekannte Sortierspalte "ps".
     NichtAngemeldet:
-      description: Nicht angemeldet – kein oder falscher API-Schlüssel im Header `X-API-Key`
+      description: Nicht angemeldet – E-Mail oder Passwort fehlt bzw. ist falsch
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Fehler'
           example:
-            fehler: 'Nicht angemeldet: gültigen API-Schlüssel im Header X-API-Key mitschicken.'
+            fehler: 'Nicht angemeldet: E-Mail oder Passwort falsch.'
     KeineBerechtigung:
       description: Angemeldet, aber die eigene Rolle darf diese Methode nicht (z. B. `nutzer` will ändern)
       content:
@@ -1440,7 +1441,12 @@ components:
           properties:
             name:
               type: string
-              example: Test Nutzer
+              description: Benutzername
+              example: user
+            email:
+              type: string
+              format: email
+              example: user@test.com
             rolle:
               type: string
               example: nutzer
@@ -1467,7 +1473,8 @@ components:
                   $ref: '#/components/schemas/Feldinfo'
       example:
         angemeldet:
-          name: Test Nutzer
+          name: user
+          email: user@test.com
           rolle: nutzer
           darf: [GET]
         ressourcen:

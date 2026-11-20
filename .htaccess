@@ -6,6 +6,10 @@
 # ganz normal weiter. Vorhandene Dateien (z. B. formular.html) bleiben erreichbar.
 
 RewriteEngine On
+
+# Anmeldung (Header "Authorization") an PHP weitergeben – nötig, falls PHP als FastCGI läuft
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ api.php [QSA,L]
