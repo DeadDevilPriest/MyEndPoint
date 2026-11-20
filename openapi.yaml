@@ -1,0 +1,1345 @@
+openapi: 3.0.3
+
+info:
+  title: MyEndPoint – Fahrzeugverwaltung
+  version: 2.0.0
+  description: |
+    Universelle REST-API für die Datenbank **fahrzeugverwaltung**.
+    Jede freigegebene Tabelle ist eine **Ressource** mit denselben Operationen:
+    auflisten, holen, anlegen, ändern und löschen.
+
+    > **Ausprobieren:** Bei jeder Operation Werte eintragen und **Execute** drücken.
+    > Die Anfragen gehen wirklich an die API – POST, PUT, PATCH und DELETE ändern die Datenbank.
+
+    ## Aufbau der URLs
+
+    | Methode | URL | Wirkung |
+    |---|---|---|
+    | GET | `api.php` | Übersicht aller Ressourcen mit ihren Feldern |
+    | GET | `api.php/{ressource}` | Liste mit Filter, Sortierung und Seiten |
+    | GET | `api.php/{ressource}/{id}` | ein Datensatz |
+    | POST | `api.php/{ressource}` | anlegen → `201` und `Location`-Header |
+    | PUT / PATCH | `api.php/{ressource}/{id}` | ändern – nur die mitgeschickten Felder |
+    | DELETE | `api.php/{ressource}/{id}` | löschen, die Antwort enthält den gelöschten Datensatz |
+
+    Ressourcen: `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe`, `fahrzeughalter`.
+    Mit der `.htaccess` funktioniert auch `api/fahrzeuge` oder nur `fahrzeuge` (ohne `api.php`).
+
+    ## Daten senden
+
+    * Als **JSON** (`Content-Type: application/json`) oder als **Formular**
+      (`application/x-www-form-urlencoded`, bei POST auch `multipart/form-data`).
+    * Feldnamen = Spaltennamen. Groß-/Kleinschreibung ist egal (`fid` = `FID`).
+    * Unbekannte Felder werden mit `400` abgelehnt. Felder, die mit `_` beginnen, werden ignoriert.
+    * Leere Formularfelder werden bei Spalten, die NULL erlauben, zu `null`.
+    * **PUT und PATCH verhalten sich gleich:** Geändert werden nur die mitgeschickten Felder.
+
+    ## Listen
+
+    * **Filter:** `?Spalte=Wert`, mehrere werden mit UND verknüpft. `*` ist Platzhalter: `?Fahrzeug_Name=VW*`
+    * **Sortieren:** `?sort=Fahrzeug_Name,-Leistung` (`-` = absteigend). Ohne Angabe: Primärschlüssel aufsteigend.
+    * **Seiten:** `?limit=20&offset=40`. `limit` 1–1000, Standard 100. `gesamt` zählt alle Treffer ohne `limit`.
+
+    ## Verweise zwischen Tabellen
+
+    Eine Spalte, die so heißt wie der Primärschlüssel einer anderen Tabelle, verweist auf diese:
+    `fahrzeuge.FAID` → `fahrzeugarten`, `FTID` → `fahrzeugtypen`, `TID` → `treibstoffe`, `FHID` → `fahrzeughalter`.
+    Echte Fremdschlüssel in der Datenbank erkennt die API ebenfalls.
+
+    * Speichern mit einem Verweis auf einen Eintrag, den es nicht gibt → `400`
+    * Löschen eines Eintrags, auf den noch verwiesen wird → `409`
+
+    ## HTML-Formulare
+
+    Formulare können nur GET und POST senden. Darum `method="post"` und zusätzlich eines davon:
+
+    * verstecktes Feld `_method` mit `PUT`, `PATCH` oder `DELETE`
+    * Feld `operation` mit `GET`, `POST`, `UPDATE` oder `DELETE` (wie im alten Formular)
+    * Header `X-HTTP-Method-Override` (für Clients ohne PUT/DELETE)
+
+    Steht keine ID in der URL, liest die API sie aus dem Feld, das wie der Primärschlüssel heißt (z. B. `FID`).
+
+    ## Antworten und Fehler
+
+    Antworten sind immer JSON in UTF-8. Fehler sehen so aus: `{"fehler": "…", "details": ["…"]}`.
+    SQL-Meldungen in `details` gibt es nur, solange in `api.php` `API_DEBUG = true` gesetzt ist.
+
+    | Status | Bedeutung |
+    |---|---|
+    | 200 | OK |
+    | 201 | angelegt |
+    | 204 | Antwort auf OPTIONS (CORS-Vorabanfrage) |
+    | 400 | ungültige Eingabe, ungültiger Filter oder ungültiges JSON |
+    | 404 | Ressource oder Datensatz nicht gefunden |
+    | 405 | Methode an dieser Adresse nicht erlaubt |
+    | 409 | Konflikt: doppelter Wert oder Eintrag wird noch verwendet |
+    | 500 | Serverfehler, z. B. Datenbank nicht erreichbar |
+
+    CORS ist offen (`Access-Control-Allow-Origin: *`). Es gibt **keine Anmeldung** – die API nur lokal betreiben.
+
+    Datentypen und Pflichtfelder in dieser Doku entsprechen der Tabellenstruktur beim Schreiben der Doku.
+    Maßgeblich ist immer die Übersicht `GET api.php`, denn die API liest die Spalten selbst aus der Datenbank.
+
+servers:
+  - url: ./api.php
+    description: Gleicher Ordner wie diese Doku (Standard)
+  - url: ./api
+    description: Ohne Dateiendung (braucht die .htaccess)
+  - url: http://{host}/{ordner}/api.php
+    description: Eigene Adresse
+    variables:
+      host:
+        default: localhost
+        description: Rechner und ggf. Port, z. B. localhost:8080
+      ordner:
+        default: MyEndPoint
+        description: Ordner unter htdocs
+
+tags:
+  - name: Übersicht
+    description: Welche Ressourcen und Felder es gibt
+  - name: Fahrzeuge
+    description: Tabelle `fahrzeuge`
+  - name: Fahrzeugtypen
+    description: Tabelle `fahrzeugtypen`, z. B. Auto, Motorrad
+  - name: Fahrzeugarten
+    description: Tabelle `fahrzeugarten`, z. B. PKW, LKW
+  - name: Treibstoffe
+    description: Tabelle `treibstoffe`, z. B. Benzin, Diesel
+  - name: Fahrzeughalter
+    description: Tabelle `fahrzeughalter`
+
+paths:
+
+  # ── Übersicht ────────────────────────────────────────────────────
+  /:
+    get:
+      tags: [Übersicht]
+      summary: Alle Ressourcen mit ihren Feldern
+      description: |
+        Liefert jede Ressource mit ihrer URL und ihren Feldern: Datentyp, Primärschlüssel,
+        automatisch vergeben, NULL erlaubt, Pflichtfeld und Verweis auf eine andere Ressource.
+        Clients können daraus Formulare bauen – so macht es `client/index.php`.
+      operationId: uebersicht
+      responses:
+        '200':
+          description: Übersicht
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Uebersicht'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  # ── Fahrzeuge ────────────────────────────────────────────────────
+  /fahrzeuge:
+    get:
+      tags: [Fahrzeuge]
+      summary: Fahrzeuge auflisten
+      operationId: fahrzeugeAuflisten
+      parameters:
+        - name: Fahrzeug_Name
+          in: query
+          description: 'Filter auf den Namen, `*` ist Platzhalter (z. B. `VW*`)'
+          schema:
+            type: string
+        - name: Leistung
+          in: query
+          description: Filter auf die Leistung in PS
+          schema:
+            type: integer
+        - name: FAID
+          in: query
+          description: Nur Fahrzeuge dieser Fahrzeugart
+          schema:
+            type: integer
+        - name: FTID
+          in: query
+          description: Nur Fahrzeuge dieses Fahrzeugtyps
+          schema:
+            type: integer
+        - name: TID
+          in: query
+          description: Nur Fahrzeuge mit diesem Treibstoff
+          schema:
+            type: integer
+        - name: FHID
+          in: query
+          description: Nur Fahrzeuge dieses Halters
+          schema:
+            type: integer
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Gefundene Fahrzeuge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FahrzeugListe'
+        '400':
+          $ref: '#/components/responses/UngueltigeParameter'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    post:
+      tags: [Fahrzeuge]
+      summary: Fahrzeug anlegen
+      description: Die FID vergibt die Datenbank. Antwort ist das Fahrzeug, wie es jetzt gespeichert ist.
+      operationId: fahrzeugAnlegen
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugNeu'
+      responses:
+        '201':
+          description: Angelegt
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeug'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  /fahrzeuge/{FID}:
+    parameters:
+      - name: FID
+        in: path
+        required: true
+        description: Primärschlüssel des Fahrzeugs
+        schema:
+          type: integer
+          minimum: 0
+        example: 1
+    get:
+      tags: [Fahrzeuge]
+      summary: Ein Fahrzeug holen
+      operationId: fahrzeugHolen
+      responses:
+        '200':
+          description: Das Fahrzeug
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeug'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    put:
+      tags: [Fahrzeuge]
+      summary: Fahrzeug ändern (PUT)
+      description: Ändert nur die mitgeschickten Felder – genau wie PATCH.
+      operationId: fahrzeugAendernPut
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    patch:
+      tags: [Fahrzeuge]
+      summary: Fahrzeug ändern (PATCH)
+      description: Ändert nur die mitgeschickten Felder.
+      operationId: fahrzeugAendern
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    delete:
+      tags: [Fahrzeuge]
+      summary: Fahrzeug löschen
+      operationId: fahrzeugLoeschen
+      responses:
+        '200':
+          description: Gelöscht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meldung:
+                    type: string
+                    example: Datensatz "1" wurde gelöscht.
+                  geloescht:
+                    $ref: '#/components/schemas/Fahrzeug'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  # ── Fahrzeugtypen ────────────────────────────────────────────────
+  /fahrzeugtypen:
+    get:
+      tags: [Fahrzeugtypen]
+      summary: Fahrzeugtypen auflisten
+      operationId: fahrzeugtypenAuflisten
+      parameters:
+        - name: FahrzeugTyp
+          in: query
+          description: 'Filter auf die Bezeichnung, `*` ist Platzhalter (z. B. `Mo*`)'
+          schema:
+            type: string
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Gefundene Fahrzeugtypen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FahrzeugtypListe'
+        '400':
+          $ref: '#/components/responses/UngueltigeParameter'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    post:
+      tags: [Fahrzeugtypen]
+      summary: Fahrzeugtyp anlegen
+      operationId: fahrzeugtypAnlegen
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugtypNeu'
+      responses:
+        '201':
+          description: Angelegt
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeugtyp'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  /fahrzeugtypen/{FTID}:
+    parameters:
+      - name: FTID
+        in: path
+        required: true
+        description: Primärschlüssel des Fahrzeugtyps
+        schema:
+          type: integer
+          minimum: 0
+        example: 1
+    get:
+      tags: [Fahrzeugtypen]
+      summary: Einen Fahrzeugtyp holen
+      operationId: fahrzeugtypHolen
+      responses:
+        '200':
+          description: Der Fahrzeugtyp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeugtyp'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    put:
+      tags: [Fahrzeugtypen]
+      summary: Fahrzeugtyp ändern (PUT)
+      description: Ändert nur die mitgeschickten Felder – genau wie PATCH.
+      operationId: fahrzeugtypAendernPut
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugtypAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugtypGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    patch:
+      tags: [Fahrzeugtypen]
+      summary: Fahrzeugtyp ändern (PATCH)
+      description: Ändert nur die mitgeschickten Felder.
+      operationId: fahrzeugtypAendern
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugtypAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugtypGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    delete:
+      tags: [Fahrzeugtypen]
+      summary: Fahrzeugtyp löschen
+      description: Nicht möglich, solange ein Fahrzeug diesen Typ hat (`409`).
+      operationId: fahrzeugtypLoeschen
+      responses:
+        '200':
+          description: Gelöscht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meldung:
+                    type: string
+                    example: Datensatz "1" wurde gelöscht.
+                  geloescht:
+                    $ref: '#/components/schemas/Fahrzeugtyp'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/WirdVerwendet'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  # ── Fahrzeugarten ────────────────────────────────────────────────
+  /fahrzeugarten:
+    get:
+      tags: [Fahrzeugarten]
+      summary: Fahrzeugarten auflisten
+      operationId: fahrzeugartenAuflisten
+      parameters:
+        - name: Fahrzeugarten
+          in: query
+          description: 'Filter auf die Bezeichnung, `*` ist Platzhalter (z. B. `P*`)'
+          schema:
+            type: string
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Gefundene Fahrzeugarten
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FahrzeugartListe'
+        '400':
+          $ref: '#/components/responses/UngueltigeParameter'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    post:
+      tags: [Fahrzeugarten]
+      summary: Fahrzeugart anlegen
+      operationId: fahrzeugartAnlegen
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugartNeu'
+      responses:
+        '201':
+          description: Angelegt
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeugart'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  /fahrzeugarten/{FAID}:
+    parameters:
+      - name: FAID
+        in: path
+        required: true
+        description: Primärschlüssel der Fahrzeugart
+        schema:
+          type: integer
+          minimum: 0
+        example: 1
+    get:
+      tags: [Fahrzeugarten]
+      summary: Eine Fahrzeugart holen
+      operationId: fahrzeugartHolen
+      responses:
+        '200':
+          description: Die Fahrzeugart
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeugart'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    put:
+      tags: [Fahrzeugarten]
+      summary: Fahrzeugart ändern (PUT)
+      description: Ändert nur die mitgeschickten Felder – genau wie PATCH.
+      operationId: fahrzeugartAendernPut
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugartAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugartGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    patch:
+      tags: [Fahrzeugarten]
+      summary: Fahrzeugart ändern (PATCH)
+      description: Ändert nur die mitgeschickten Felder.
+      operationId: fahrzeugartAendern
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeugartAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeugartGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    delete:
+      tags: [Fahrzeugarten]
+      summary: Fahrzeugart löschen
+      description: Nicht möglich, solange ein Fahrzeug diese Art hat (`409`).
+      operationId: fahrzeugartLoeschen
+      responses:
+        '200':
+          description: Gelöscht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meldung:
+                    type: string
+                    example: Datensatz "1" wurde gelöscht.
+                  geloescht:
+                    $ref: '#/components/schemas/Fahrzeugart'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/WirdVerwendet'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  # ── Treibstoffe ──────────────────────────────────────────────────
+  /treibstoffe:
+    get:
+      tags: [Treibstoffe]
+      summary: Treibstoffe auflisten
+      operationId: treibstoffeAuflisten
+      parameters:
+        - name: Treibstoff
+          in: query
+          description: 'Filter auf die Bezeichnung, `*` ist Platzhalter (z. B. `D*`)'
+          schema:
+            type: string
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Gefundene Treibstoffe
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TreibstoffListe'
+        '400':
+          $ref: '#/components/responses/UngueltigeParameter'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    post:
+      tags: [Treibstoffe]
+      summary: Treibstoff anlegen
+      operationId: treibstoffAnlegen
+      requestBody:
+        $ref: '#/components/requestBodies/TreibstoffNeu'
+      responses:
+        '201':
+          description: Angelegt
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Treibstoff'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  /treibstoffe/{TID}:
+    parameters:
+      - name: TID
+        in: path
+        required: true
+        description: Primärschlüssel des Treibstoffs
+        schema:
+          type: integer
+          minimum: 0
+        example: 1
+    get:
+      tags: [Treibstoffe]
+      summary: Einen Treibstoff holen
+      operationId: treibstoffHolen
+      responses:
+        '200':
+          description: Der Treibstoff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Treibstoff'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    put:
+      tags: [Treibstoffe]
+      summary: Treibstoff ändern (PUT)
+      description: Ändert nur die mitgeschickten Felder – genau wie PATCH.
+      operationId: treibstoffAendernPut
+      requestBody:
+        $ref: '#/components/requestBodies/TreibstoffAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/TreibstoffGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    patch:
+      tags: [Treibstoffe]
+      summary: Treibstoff ändern (PATCH)
+      description: Ändert nur die mitgeschickten Felder.
+      operationId: treibstoffAendern
+      requestBody:
+        $ref: '#/components/requestBodies/TreibstoffAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/TreibstoffGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    delete:
+      tags: [Treibstoffe]
+      summary: Treibstoff löschen
+      description: Nicht möglich, solange ein Fahrzeug diesen Treibstoff hat (`409`).
+      operationId: treibstoffLoeschen
+      responses:
+        '200':
+          description: Gelöscht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meldung:
+                    type: string
+                    example: Datensatz "1" wurde gelöscht.
+                  geloescht:
+                    $ref: '#/components/schemas/Treibstoff'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/WirdVerwendet'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  # ── Fahrzeughalter ───────────────────────────────────────────────
+  /fahrzeughalter:
+    get:
+      tags: [Fahrzeughalter]
+      summary: Fahrzeughalter auflisten
+      operationId: fahrzeughalterAuflisten
+      parameters:
+        - name: Vorname
+          in: query
+          description: 'Filter auf den Vornamen, `*` ist Platzhalter'
+          schema:
+            type: string
+        - name: Nachname
+          in: query
+          description: 'Filter auf den Nachnamen, `*` ist Platzhalter (z. B. `Muster*`)'
+          schema:
+            type: string
+        - name: Tel
+          in: query
+          description: 'Filter auf die Telefonnummer, `*` ist Platzhalter (z. B. `030*`)'
+          schema:
+            type: string
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Gefundene Fahrzeughalter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FahrzeughalterListe'
+        '400':
+          $ref: '#/components/responses/UngueltigeParameter'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    post:
+      tags: [Fahrzeughalter]
+      summary: Fahrzeughalter anlegen
+      operationId: fahrzeughalterAnlegen
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeughalterNeu'
+      responses:
+        '201':
+          description: Angelegt
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeughalter'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+  /fahrzeughalter/{FHID}:
+    parameters:
+      - name: FHID
+        in: path
+        required: true
+        description: Primärschlüssel des Fahrzeughalters
+        schema:
+          type: integer
+          minimum: 0
+        example: 1
+    get:
+      tags: [Fahrzeughalter]
+      summary: Einen Fahrzeughalter holen
+      operationId: fahrzeughalterHolen
+      responses:
+        '200':
+          description: Der Fahrzeughalter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fahrzeughalter'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    put:
+      tags: [Fahrzeughalter]
+      summary: Fahrzeughalter ändern (PUT)
+      description: Ändert nur die mitgeschickten Felder – genau wie PATCH.
+      operationId: fahrzeughalterAendernPut
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeughalterAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeughalterGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    patch:
+      tags: [Fahrzeughalter]
+      summary: Fahrzeughalter ändern (PATCH)
+      description: Ändert nur die mitgeschickten Felder.
+      operationId: fahrzeughalterAendern
+      requestBody:
+        $ref: '#/components/requestBodies/FahrzeughalterAenderung'
+      responses:
+        '200':
+          $ref: '#/components/responses/FahrzeughalterGeaendert'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/Konflikt'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+    delete:
+      tags: [Fahrzeughalter]
+      summary: Fahrzeughalter löschen
+      description: Nicht möglich, solange ihm noch ein Fahrzeug gehört (`409`).
+      operationId: fahrzeughalterLoeschen
+      responses:
+        '200':
+          description: Gelöscht
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meldung:
+                    type: string
+                    example: Datensatz "1" wurde gelöscht.
+                  geloescht:
+                    $ref: '#/components/schemas/Fahrzeughalter'
+        '404':
+          $ref: '#/components/responses/NichtGefunden'
+        '409':
+          $ref: '#/components/responses/WirdVerwendet'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
+
+
+components:
+
+  # ── Wiederverwendete Parameter für Listen ────────────────────────
+  parameters:
+    sort:
+      name: sort
+      in: query
+      description: |
+        Sortierung: Spaltennamen mit Komma getrennt, `-` davor = absteigend.
+        Beispiel: `-Leistung` oder `Nachname,Vorname`. Ohne Angabe: Primärschlüssel aufsteigend.
+      schema:
+        type: string
+    limit:
+      name: limit
+      in: query
+      description: Höchstens so viele Datensätze liefern
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    offset:
+      name: offset
+      in: query
+      description: So viele Datensätze überspringen (für Seite 2, 3 …)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  headers:
+    Location:
+      description: URL des neuen Datensatzes
+      schema:
+        type: string
+        format: uri
+        example: http://localhost/MyEndPoint/api.php/fahrzeuge/1
+
+  # ── Request-Bodies: JSON oder Formular ───────────────────────────
+  requestBodies:
+    FahrzeugNeu:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeug'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/Fahrzeug'
+    FahrzeugAenderung:
+      required: true
+      description: Nur die Felder, die sich ändern sollen
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FahrzeugFelder'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FahrzeugFelder'
+    FahrzeugtypNeu:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugtyp'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugtyp'
+    FahrzeugtypAenderung:
+      required: true
+      description: Nur die Felder, die sich ändern sollen
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FahrzeugtypFelder'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FahrzeugtypFelder'
+    FahrzeugartNeu:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugart'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugart'
+    FahrzeugartAenderung:
+      required: true
+      description: Nur die Felder, die sich ändern sollen
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FahrzeugartFelder'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FahrzeugartFelder'
+    TreibstoffNeu:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Treibstoff'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/Treibstoff'
+    TreibstoffAenderung:
+      required: true
+      description: Nur die Felder, die sich ändern sollen
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TreibstoffFelder'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/TreibstoffFelder'
+    FahrzeughalterNeu:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeughalter'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/Fahrzeughalter'
+    FahrzeughalterAenderung:
+      required: true
+      description: Nur die Felder, die sich ändern sollen
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FahrzeughalterFelder'
+        application/x-www-form-urlencoded:
+          schema:
+            $ref: '#/components/schemas/FahrzeughalterFelder'
+
+  # ── Antworten ────────────────────────────────────────────────────
+  responses:
+    FahrzeugGeaendert:
+      description: Geändert. Antwort ist der neue Stand.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeug'
+    FahrzeugtypGeaendert:
+      description: Geändert. Antwort ist der neue Stand.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugtyp'
+    FahrzeugartGeaendert:
+      description: Geändert. Antwort ist der neue Stand.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeugart'
+    TreibstoffGeaendert:
+      description: Geändert. Antwort ist der neue Stand.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Treibstoff'
+    FahrzeughalterGeaendert:
+      description: Geändert. Antwort ist der neue Stand.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fahrzeughalter'
+
+    UngueltigeEingaben:
+      description: Ungültige Eingaben (Pflichtfeld fehlt, unbekanntes Feld, Verweis ins Leere, falscher Datentyp …)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Ungültige Eingaben.
+            details:
+              - Pflichtfeld "Leistung" fehlt.
+              - 'Feld "FTID": Eintrag "99" gibt es in "fahrzeugtypen" nicht.'
+    UngueltigeParameter:
+      description: Ungültiger Filter, Sortierung, limit oder offset
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Ungültige Parameter.
+            details:
+              - limit muss eine ganze Zahl von 1 bis 1000 sein.
+              - Unbekannte Sortierspalte "ps".
+    NichtGefunden:
+      description: Datensatz nicht gefunden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Datensatz "99" nicht gefunden.
+    Konflikt:
+      description: Konflikt mit vorhandenen Daten, z. B. doppelter Primärschlüssel oder doppelter Wert in einer UNIQUE-Spalte
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Ein Datensatz mit diesem Wert existiert bereits.
+    WirdVerwendet:
+      description: Der Eintrag wird noch von einem Fahrzeug verwendet und kann nicht gelöscht werden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: 'Der Datensatz wird noch in "fahrzeuge" verwendet (Spalte FTID, Anzahl: 2).'
+    Serverfehler:
+      description: Fehler auf dem Server, z. B. Datenbank nicht erreichbar. `details` nur bei `API_DEBUG = true`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Fehler'
+          example:
+            fehler: Interner Serverfehler.
+            details:
+              - SQLSTATE[HY000] [2002] Connection refused
+
+  # ── Datenmodelle ─────────────────────────────────────────────────
+  #  <Name>Felder = alle änderbaren Felder, nichts ist Pflicht (für PUT/PATCH)
+  #  <Name>       = Datensatz mit ID und Pflichtfeldern (für POST und alle Antworten)
+  schemas:
+
+    # Fahrzeuge
+    FahrzeugFelder:
+      type: object
+      properties:
+        Fahrzeug_Name:
+          type: string
+          description: Name bzw. Modell des Fahrzeugs
+          example: VW Käfer
+        Leistung:
+          type: integer
+          description: Leistung in PS
+          example: 50
+        FAID:
+          type: integer
+          nullable: true
+          description: Fahrzeugart – Verweis auf `fahrzeugarten.FAID`
+          example: 1
+        FTID:
+          type: integer
+          nullable: true
+          description: Fahrzeugtyp – Verweis auf `fahrzeugtypen.FTID`
+          example: 1
+        TID:
+          type: integer
+          nullable: true
+          description: Treibstoff – Verweis auf `treibstoffe.TID`
+          example: 1
+        FHID:
+          type: integer
+          nullable: true
+          description: Halter – Verweis auf `fahrzeughalter.FHID`
+          example: 1
+    Fahrzeug:
+      allOf:
+        - type: object
+          properties:
+            FID:
+              type: integer
+              readOnly: true
+              description: Primärschlüssel, vergibt die Datenbank
+              example: 1
+        - $ref: '#/components/schemas/FahrzeugFelder'
+      required: [Fahrzeug_Name, Leistung]
+    FahrzeugListe:
+      allOf:
+        - $ref: '#/components/schemas/ListenInfo'
+        - type: object
+          properties:
+            daten:
+              type: array
+              items:
+                $ref: '#/components/schemas/Fahrzeug'
+
+    # Fahrzeugtypen
+    FahrzeugtypFelder:
+      type: object
+      properties:
+        FahrzeugTyp:
+          type: string
+          description: Bezeichnung des Typs
+          example: Auto
+    Fahrzeugtyp:
+      allOf:
+        - type: object
+          properties:
+            FTID:
+              type: integer
+              readOnly: true
+              description: Primärschlüssel, vergibt die Datenbank
+              example: 1
+        - $ref: '#/components/schemas/FahrzeugtypFelder'
+      required: [FahrzeugTyp]
+    FahrzeugtypListe:
+      allOf:
+        - $ref: '#/components/schemas/ListenInfo'
+        - type: object
+          properties:
+            daten:
+              type: array
+              items:
+                $ref: '#/components/schemas/Fahrzeugtyp'
+
+    # Fahrzeugarten
+    FahrzeugartFelder:
+      type: object
+      properties:
+        Fahrzeugarten:
+          type: string
+          description: Bezeichnung der Fahrzeugart
+          example: PKW
+    Fahrzeugart:
+      allOf:
+        - type: object
+          properties:
+            FAID:
+              type: integer
+              readOnly: true
+              description: Primärschlüssel, vergibt die Datenbank
+              example: 1
+        - $ref: '#/components/schemas/FahrzeugartFelder'
+      required: [Fahrzeugarten]
+    FahrzeugartListe:
+      allOf:
+        - $ref: '#/components/schemas/ListenInfo'
+        - type: object
+          properties:
+            daten:
+              type: array
+              items:
+                $ref: '#/components/schemas/Fahrzeugart'
+
+    # Treibstoffe
+    TreibstoffFelder:
+      type: object
+      properties:
+        Treibstoff:
+          type: string
+          description: Bezeichnung des Treibstoffs
+          example: Benzin
+    Treibstoff:
+      allOf:
+        - type: object
+          properties:
+            TID:
+              type: integer
+              readOnly: true
+              description: Primärschlüssel, vergibt die Datenbank
+              example: 1
+        - $ref: '#/components/schemas/TreibstoffFelder'
+      required: [Treibstoff]
+    TreibstoffListe:
+      allOf:
+        - $ref: '#/components/schemas/ListenInfo'
+        - type: object
+          properties:
+            daten:
+              type: array
+              items:
+                $ref: '#/components/schemas/Treibstoff'
+
+    # Fahrzeughalter
+    FahrzeughalterFelder:
+      type: object
+      properties:
+        Vorname:
+          type: string
+          example: Max
+        Nachname:
+          type: string
+          example: Mustermann
+        Tel:
+          type: string
+          nullable: true
+          description: Telefonnummer
+          example: 030 1234567
+    Fahrzeughalter:
+      allOf:
+        - type: object
+          properties:
+            FHID:
+              type: integer
+              readOnly: true
+              description: Primärschlüssel, vergibt die Datenbank
+              example: 1
+        - $ref: '#/components/schemas/FahrzeughalterFelder'
+      required: [Vorname, Nachname]
+    FahrzeughalterListe:
+      allOf:
+        - $ref: '#/components/schemas/ListenInfo'
+        - type: object
+          properties:
+            daten:
+              type: array
+              items:
+                $ref: '#/components/schemas/Fahrzeughalter'
+
+    # Allgemein
+    ListenInfo:
+      type: object
+      properties:
+        gesamt:
+          type: integer
+          description: Treffer insgesamt (ohne limit)
+          example: 1
+        limit:
+          type: integer
+          example: 100
+        offset:
+          type: integer
+          example: 0
+
+    Fehler:
+      type: object
+      required: [fehler]
+      properties:
+        fehler:
+          type: string
+          description: Was schiefgegangen ist
+        details:
+          type: array
+          description: Einzelne Probleme, z. B. jedes fehlende Pflichtfeld
+          items:
+            type: string
+
+    Uebersicht:
+      type: object
+      properties:
+        ressourcen:
+          type: object
+          description: Schlüssel = Name der Ressource in der URL
+          additionalProperties:
+            type: object
+            properties:
+              url:
+                type: string
+                format: uri
+              felder:
+                type: object
+                description: Schlüssel = Spaltenname
+                additionalProperties:
+                  $ref: '#/components/schemas/Feldinfo'
+      example:
+        ressourcen:
+          fahrzeugtypen:
+            url: http://localhost/MyEndPoint/api.php/fahrzeugtypen
+            felder:
+              FTID:
+                typ: int(11)
+                pk: true
+                auto: true
+                'null': false
+                pflicht: false
+                verweis: null
+              FahrzeugTyp:
+                typ: varchar(50)
+                pk: false
+                auto: false
+                'null': false
+                pflicht: true
+                verweis: null
+
+    Feldinfo:
+      type: object
+      properties:
+        typ:
+          type: string
+          description: Datentyp in MySQL
+          example: int(11)
+        pk:
+          type: boolean
+          description: Primärschlüssel
+        auto:
+          type: boolean
+          description: Wert wird automatisch vergeben (AUTO_INCREMENT)
+        'null':
+          type: boolean
+          description: Feld darf leer (NULL) sein
+        pflicht:
+          type: boolean
+          description: Muss beim Anlegen angegeben werden
+        verweis:
+          type: object
+          nullable: true
+          description: Verweis auf eine andere Ressource, sonst null
+          properties:
+            ressource:
+              type: string
+              enum: [fahrzeuge, fahrzeugtypen, fahrzeugarten, treibstoffe, fahrzeughalter]
+              example: fahrzeugtypen
+            spalte:
+              type: string
+              example: FTID

@@ -1,4 +1,4 @@
-﻿# Optional: URLs ohne "api.php"
+# Optional: URLs ohne "api.php"
 #   http://localhost/MyEndPoint/api/fahrzeuge/5  →  wird von api.php beantwortet
 #   http://localhost/MyEndPoint/fahrzeuge/5      →  ebenso
 # Braucht mod_rewrite (bei XAMPP aktiv). Ohne diese Datei funktioniert
