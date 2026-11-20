@@ -43,7 +43,8 @@ declare(strict_types=1);
  *
  *  Anmeldung: Jede Anfrage braucht einen API-Schlüssel im Header X-API-Key
  *  (bei HTML-Formularen ersatzweise im Feld _api_key). Die Konten stehen in
- *  der Tabelle benutzer (anlegen mit benutzer.sql), was eine Rolle darf, steht
+ *  einer eigenen Datenbank, getrennt von den Fahrzeugdaten (benutzerverwaltung,
+ *  Tabelle benutzer – anlegen mit benutzer.sql). Was eine Rolle darf, steht
  *  unten in ROLLEN. Kein gültiger Schlüssel → 401, Rolle darf das nicht → 403.
  *
  *  Antwort immer JSON. Bei Fehlern: {"fehler": "...", "details": [...]}
@@ -79,8 +80,12 @@ const RESSOURCEN = [
     'fahrzeughalter' => TBL_FAHRZEUGHALTER,
 ];
 
-// Konten für die Anmeldung. Diese Tabelle NIE in RESSOURCEN aufnehmen,
-// sonst könnte jeder Admin die Konten über die API lesen und ändern.
+// Konten für die Anmeldung – in einer eigenen, getrennten Datenbank.
+// Die Fahrzeug-Verbindung db() kommt dadurch gar nicht an die Konten heran.
+// Tipp: Hier reicht ein eigener MySQL-Benutzer, der in dieser Datenbank nur SELECT darf.
+const AUTH_DSN     = 'mysql:host=127.0.0.1;dbname=benutzerverwaltung;charset=utf8mb4';
+const AUTH_USER    = 'root';
+const AUTH_PASS    = '';
 const TBL_BENUTZER = 'benutzer';
 
 // Was darf welche Rolle? Die Rolle steht beim Konto in der Tabelle benutzer.
@@ -288,16 +293,34 @@ function primaerschluessel(string $tabelle): string
 }
 
 
+// Zweite PDO-Verbindung (Singleton) – zur getrennten Datenbank mit den Konten
+function authDb(): PDO
+{
+    static $pdo = null;
+    if ($pdo instanceof PDO) return $pdo;
+
+    $pdo = new PDO(AUTH_DSN, AUTH_USER, AUTH_PASS, [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ]);
+    return $pdo;
+}
+
 // Sucht das Konto zum API-Schlüssel. In der Tabelle steht nur die SHA-256-Prüfsumme
 // des Schlüssels, nie der Schlüssel selbst. Ergebnis: ['Name' => …, 'Rolle' => …] oder null.
 function benutzerFinden(string $schluessel): ?array
 {
     try {
-        $abfrage = db()->prepare('SELECT Name, Rolle FROM ' . bezeichner(TBL_BENUTZER) . ' WHERE Schluessel = ?');
+        $abfrage = authDb()->prepare('SELECT Name, Rolle FROM ' . bezeichner(TBL_BENUTZER) . ' WHERE Schluessel = ?');
         $abfrage->execute([hash('sha256', $schluessel)]);
     } catch (PDOException $e) {
-        if ((int) ($e->errorInfo[1] ?? 0) === 1146) {   // 1146 = Tabelle gibt es nicht
-            fehler(500, 'Die Tabelle "' . TBL_BENUTZER . '" fehlt. Bitte benutzer.sql in phpMyAdmin importieren.');
+        // Beim Verbinden steht die MySQL-Fehlernummer in getCode(), bei Abfragen in errorInfo
+        $nummer = (int) ($e->errorInfo[1] ?? $e->getCode());
+        preg_match('/dbname=([^;]+)/', AUTH_DSN, $treffer);
+        if ($nummer === 1049 || $nummer === 1146) {   // 1049 = Datenbank fehlt, 1146 = Tabelle fehlt
+            fehler(500, 'Die Konten-Datenbank "' . ($treffer[1] ?? '?') . '" bzw. ihre Tabelle "' . TBL_BENUTZER
+                        . '" fehlt. Bitte benutzer.sql in phpMyAdmin importieren.');
         }
         throw $e;
     }

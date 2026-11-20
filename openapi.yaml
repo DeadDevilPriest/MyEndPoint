@@ -15,8 +15,9 @@ info:
     ## Anmeldung und Rollen
 
     Jede Anfrage braucht einen **API-Schlüssel** im Header `X-API-Key`.
-    Die Konten stehen in der Tabelle `benutzer` (anlegen mit `benutzer.sql`), gespeichert wird
-    nur die SHA-256-Prüfsumme des Schlüssels. Welche Rolle ein Konto hat, steht in der Datenbank –
+    Die Konten stehen in einer eigenen Datenbank `benutzerverwaltung`, getrennt von den Fahrzeugdaten
+    (Tabelle `benutzer`, anlegen mit `benutzer.sql`). Gespeichert wird nur die SHA-256-Prüfsumme
+    des Schlüssels. Welche Rolle ein Konto hat, steht in der Datenbank –
     der Client schickt nur den Schlüssel mit, nie die Rolle.
 
     | Rolle | darf |
@@ -976,7 +977,7 @@ components:
       in: header
       name: X-API-Key
       description: |
-        Persönlicher API-Schlüssel aus der Tabelle `benutzer`.
+        Persönlicher API-Schlüssel (Konten in der Datenbank `benutzerverwaltung`, Tabelle `benutzer`).
         Rolle `nutzer` darf nur lesen (GET), Rolle `admin` alles.
 
   # ── Wiederverwendete Parameter für Listen ────────────────────────

@@ -43,7 +43,7 @@ $apiUrl = '../api.php';
 
 <h1>Fahrzeugverwaltung</h1>
 
-<!-- Anmeldung: Den API-Schlüssel bekommt man vom Admin (Tabelle benutzer, siehe benutzer.sql) -->
+<!-- Anmeldung: Den API-Schlüssel bekommt man vom Admin (Datenbank benutzerverwaltung, siehe benutzer.sql) -->
 <form id="anmeldung">
     <fieldset>
         <label for="schluessel">API-Schlüssel</label>

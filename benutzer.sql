@@ -1,8 +1,12 @@
 -- Konten für die Anmeldung an der API (per API-Schlüssel)
--- phpMyAdmin: Datenbank fahrzeugverwaltung wählen → Reiter "SQL" → einfügen → OK
+-- Eigene Datenbank, getrennt von fahrzeugverwaltung. Der Name muss zu AUTH_DSN in api.php passen.
+-- phpMyAdmin: oben links auf den Server (nicht auf eine Datenbank) → Reiter "SQL" → einfügen → OK
 --
 -- Gespeichert wird nur die SHA-256-Prüfsumme des Schlüssels, nie der Schlüssel selbst.
 -- Wer die Tabelle sieht, kennt also keinen Schlüssel.
+
+CREATE DATABASE IF NOT EXISTS benutzerverwaltung CHARACTER SET utf8mb4;
+USE benutzerverwaltung;
 
 CREATE TABLE IF NOT EXISTS benutzer (
     BID        INT AUTO_INCREMENT PRIMARY KEY,
@@ -22,3 +26,9 @@ CREATE TABLE IF NOT EXISTS benutzer (
 --
 -- Schlüssel ändern:   UPDATE benutzer SET Schluessel = SHA2('neuer-schluessel', 256) WHERE BID = 1;
 -- Konto sperren:      DELETE FROM benutzer WHERE BID = 1;
+--
+-- Optional, aber sauberer: eigener MySQL-Benutzer für die Anmeldung, der nur lesen darf.
+-- Dann in api.php AUTH_USER/AUTH_PASS auf diesen Benutzer setzen.
+--
+-- CREATE USER 'api_anmeldung'@'localhost' IDENTIFIED BY 'ein-passwort';
+-- GRANT SELECT ON benutzerverwaltung.benutzer TO 'api_anmeldung'@'localhost';
