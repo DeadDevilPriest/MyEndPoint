@@ -36,18 +36,20 @@ $apiUrl = '../api.php';
         #angemeldet { display: flex; gap: 1rem; align-items: center; max-width: 520px; margin: 0 0 1rem; }
         #angemeldet[hidden] { display: none; }
         #angemeldet button { margin: 0 0 0 auto; padding: .3rem .8rem; }
-        #schluessel { width: 100%; padding: .4rem; box-sizing: border-box; }
+        #login, #passwort { width: 100%; padding: .4rem; box-sizing: border-box; }
     </style>
 </head>
 <body>
 
 <h1>Fahrzeugverwaltung</h1>
 
-<!-- Anmeldung: Den API-Schlüssel bekommt man vom Admin (Datenbank benutzerverwaltung, siehe benutzer.sql) -->
+<!-- Anmeldung mit einem Konto aus der Konten-Datenbank (siehe benutzer.sql) -->
 <form id="anmeldung">
     <fieldset>
-        <label for="schluessel">API-Schlüssel</label>
-        <input type="password" id="schluessel" autocomplete="current-password" required>
+        <label for="login">E-Mail oder Benutzername</label>
+        <input type="text" id="login" autocomplete="username" required>
+        <label for="passwort">Passwort</label>
+        <input type="password" id="passwort" autocomplete="current-password" required>
         <button type="submit">Anmelden</button>
     </fieldset>
 </form>
@@ -132,7 +134,7 @@ let felder     = {};          // Felder der gewählten Tabelle
 let pk         = null;        // Name des Primärschlüssels, meist "id"
 let auswahlen  = {};          // Fremdschlüssel: Spalte → Map(Wert → lesbarer Text)
 const geaendert = new Set();  // Felder, die seit dem letzten Laden geändert wurden
-let apiSchluessel = '';       // wird bei jeder Anfrage im Header X-API-Key mitgeschickt
+let zugang     = '';          // "Basic …" – geht bei jeder Anfrage im Header Authorization mit
 let rechte     = [];          // HTTP-Methoden, die die eigene Rolle darf (meldet die API)
 
 const el = id => document.getElementById(id);
@@ -144,8 +146,8 @@ const istZahl     = typ => istGanzzahl(typ) || /^(decimal|numeric|float|double|r
 // ── 3) Verbindung zur API ──────────────────────────────────────
 // Schickt eine Anfrage und liefert Status, JSON und alles für die Detail-Anzeige
 async function anfrage(methode, pfad, daten = null) {
-    // Der Schlüssel weist uns aus. Was wir dürfen, entscheidet die API anhand des Kontos.
-    const optionen = { method: methode, headers: { 'X-API-Key': apiSchluessel } };
+    // E-Mail und Passwort weisen uns aus. Was wir dürfen, entscheidet die API anhand des Kontos.
+    const optionen = { method: methode, headers: { 'Authorization': zugang } };
     if (daten !== null) {
         optionen.headers['Content-Type'] = 'application/json';
         optionen.body = JSON.stringify(daten);
@@ -186,7 +188,7 @@ async function start() {
 
     // Anmeldung ausblenden, Formular zeigen
     const konto = r.json.angemeldet ?? {};
-    el('wer').textContent  = `${konto.name} (Rolle: ${konto.rolle})`;
+    el('wer').textContent  = `${konto.name} <${konto.email}> (Rolle: ${konto.rolle})`;
     el('anmeldung').hidden  = true;
     el('angemeldet').hidden = false;
     el('formular').hidden   = false;
@@ -213,23 +215,31 @@ function operationenFreigeben() {
 }
 
 function abmelden() {
-    apiSchluessel = '';
-    schluesselMerken('');
-    el('schluessel').value  = '';
+    zugang = '';
+    zugangMerken('');
+    el('passwort').value    = '';
     el('anmeldung').hidden  = false;
     el('angemeldet').hidden = true;
     el('formular').hidden   = true;
 }
 
-// Schlüssel nur für diesen Browser-Tab merken (sessionStorage), damit Neuladen nicht abmeldet.
-// Beim Schließen des Tabs ist er weg.
-function schluesselLaden() {
-    try { return sessionStorage.getItem('apiSchluessel') ?? ''; } catch { return ''; }
+// "Basic " + Base64("login:passwort") – so sieht HTTP Basic Auth aus.
+// TextEncoder, damit auch Umlaute im Passwort richtig ankommen (btoa allein kann nur Latin-1).
+// Achtung: Base64 ist keine Verschlüsselung – außerhalb von localhost nur über https://.
+function basicAuth(login, passwort) {
+    const bytes = new TextEncoder().encode(`${login}:${passwort}`);
+    return 'Basic ' + btoa(String.fromCharCode(...bytes));
 }
-function schluesselMerken(wert) {
+
+// Zugang nur für diesen Browser-Tab merken (sessionStorage), damit Neuladen nicht abmeldet.
+// Beim Schließen des Tabs ist er weg.
+function zugangLaden() {
+    try { return sessionStorage.getItem('zugang') ?? ''; } catch { return ''; }
+}
+function zugangMerken(wert) {
     try {
-        if (wert) sessionStorage.setItem('apiSchluessel', wert);
-        else      sessionStorage.removeItem('apiSchluessel');
+        if (wert) sessionStorage.setItem('zugang', wert);
+        else      sessionStorage.removeItem('zugang');
     } catch { /* ohne Speicher geht es auch, dann nur ohne Merken */ }
 }
 
@@ -532,15 +542,15 @@ el('felder').addEventListener('change', e => geaendert.add(e.target.name));
 el('leeren').addEventListener('click', () => { formularLeeren(); el('ergebnis').hidden = true; });
 el('anmeldung').addEventListener('submit', (ereignis) => {
     ereignis.preventDefault();
-    apiSchluessel = el('schluessel').value.trim();
-    schluesselMerken(apiSchluessel);
+    zugang = basicAuth(el('login').value.trim(), el('passwort').value);
+    zugangMerken(zugang);
     start();
 });
 el('abmelden').addEventListener('click', () => { abmelden(); el('ergebnis').hidden = true; });
 
 // Seite neu geladen und schon angemeldet? Dann direkt starten, sonst auf die Anmeldung warten.
-apiSchluessel = schluesselLaden();
-if (apiSchluessel) start();
+zugang = zugangLaden();
+if (zugang) start();
 </script>
 </body>
 </html>

@@ -1,31 +1,39 @@
--- Konten für die Anmeldung an der API (per API-Schlüssel)
--- Eigene Datenbank, getrennt von fahrzeugverwaltung. Der Name muss zu AUTH_DSN in api.php passen.
+-- Konten für die Anmeldung an der API (E-Mail oder Benutzername + Passwort)
+-- Eigene Datenbank, getrennt von fahrzeugverwaltung.
+-- Datenbank- und Tabellenname müssen zu AUTH_DSN und TBL_BENUTZER in api.php passen.
 -- phpMyAdmin: oben links auf den Server (nicht auf eine Datenbank) → Reiter "SQL" → einfügen → OK
---
--- Gespeichert wird nur die SHA-256-Prüfsumme des Schlüssels, nie der Schlüssel selbst.
--- Wer die Tabelle sieht, kennt also keinen Schlüssel.
 
 CREATE DATABASE IF NOT EXISTS benutzerverwaltung CHARACTER SET utf8mb4;
 USE benutzerverwaltung;
 
 CREATE TABLE IF NOT EXISTS benutzer (
-    BID        INT AUTO_INCREMENT PRIMARY KEY,
-    Name       VARCHAR(50) NOT NULL,
-    Rolle      VARCHAR(20) NOT NULL DEFAULT 'nutzer',  -- muss in ROLLEN in api.php stehen: nutzer, admin
-    Schluessel CHAR(64)    NOT NULL UNIQUE             -- SHA-256 des API-Schlüssels
+    IID       INT AUTO_INCREMENT PRIMARY KEY,
+    username  VARCHAR(50)  NOT NULL UNIQUE,
+    useremail VARCHAR(255) NOT NULL UNIQUE,
+    password  VARCHAR(255) NOT NULL,                  -- Hash von password_hash(), NIE das Passwort selbst
+    rolle     VARCHAR(20)  NOT NULL DEFAULT 'nutzer'  -- muss in ROLLEN in api.php stehen: nutzer, admin
 );
 
--- Konten anlegen: Schlüssel selbst ausdenken (lang und zufällig, mindestens 20 Zeichen).
--- SHA2(…, 256) macht daraus die Prüfsumme. Den Schlüssel selbst bekommt nur die Person,
--- die das Konto benutzt – sie trägt ihn im Client bzw. in docs.html unter "Authorize" ein.
--- Zum Benutzen: die beiden Zeilen unten anpassen und die -- davor entfernen.
+-- Tabelle gibt es schon (z. B. mit Klartext-Passwörtern)? Dann stattdessen:
 --
--- INSERT INTO benutzer (Name, Rolle, Schluessel) VALUES
--- ('Test Nutzer', 'nutzer', SHA2('hier-einen-langen-schluessel-ausdenken', 256)),
--- ('Test Admin',  'admin',  SHA2('hier-einen-anderen-schluessel-ausdenken', 256));
+-- ALTER TABLE benutzer
+--     MODIFY password VARCHAR(255) NOT NULL,   -- Hashes sind 60 Zeichen lang
+--     ADD UNIQUE (useremail),                  -- Anmeldung per E-Mail → muss eindeutig sein
+--     ADD UNIQUE (username);
+
+-- Passwörter speichern: NUR als Hash. Den Hash erzeugt PHP, z. B. in der XAMPP-Shell:
 --
--- Schlüssel ändern:   UPDATE benutzer SET Schluessel = SHA2('neuer-schluessel', 256) WHERE BID = 1;
--- Konto sperren:      DELETE FROM benutzer WHERE BID = 1;
+--     php -r "echo password_hash('das-passwort', PASSWORD_DEFAULT);"
+--
+-- Die Ausgabe ($2y$10$…) kommt in die Spalte password:
+--
+-- INSERT INTO benutzer (username, useremail, password, rolle) VALUES
+-- ('admin', 'admin@test.com', 'HIER-DEN-HASH-EINFUEGEN', 'admin');
+--
+-- UPDATE benutzer SET password = 'HIER-DEN-HASH-EINFUEGEN' WHERE IID = 1;
+--
+-- Warum nicht SHA2()? Das ist für Passwörter zu schnell zu knacken. password_hash()
+-- ist absichtlich langsam und fügt jedem Passwort einen eigenen Zufallswert (Salt) hinzu.
 --
 -- Optional, aber sauberer: eigener MySQL-Benutzer für die Anmeldung, der nur lesen darf.
 -- Dann in api.php AUTH_USER/AUTH_PASS auf diesen Benutzer setzen.
