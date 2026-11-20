@@ -33,13 +33,31 @@ $apiUrl = '../api.php';
         tbody tr:hover { background: #f1f5fb; }
         details { margin-top: 1rem; }
         pre { background: #f6f6f6; padding: .75rem; overflow-x: auto; font-size: .85rem; }
+        #angemeldet { display: flex; gap: 1rem; align-items: center; max-width: 520px; margin: 0 0 1rem; }
+        #angemeldet[hidden] { display: none; }
+        #angemeldet button { margin: 0 0 0 auto; padding: .3rem .8rem; }
+        #schluessel { width: 100%; padding: .4rem; box-sizing: border-box; }
     </style>
 </head>
 <body>
 
 <h1>Fahrzeugverwaltung</h1>
 
-<form id="formular">
+<!-- Anmeldung: Den API-Schlüssel bekommt man vom Admin (Tabelle benutzer, siehe benutzer.sql) -->
+<form id="anmeldung">
+    <fieldset>
+        <label for="schluessel">API-Schlüssel</label>
+        <input type="password" id="schluessel" autocomplete="current-password" required>
+        <button type="submit">Anmelden</button>
+    </fieldset>
+</form>
+
+<p id="angemeldet" hidden>
+    <span>Angemeldet als <strong id="wer"></strong></span>
+    <button type="button" id="abmelden">Abmelden</button>
+</p>
+
+<form id="formular" hidden>
     <fieldset>
         <label for="ressource">Tabelle</label>
         <select id="ressource"></select>
@@ -114,6 +132,8 @@ let felder     = {};          // Felder der gewählten Tabelle
 let pk         = null;        // Name des Primärschlüssels, meist "id"
 let auswahlen  = {};          // Fremdschlüssel: Spalte → Map(Wert → lesbarer Text)
 const geaendert = new Set();  // Felder, die seit dem letzten Laden geändert wurden
+let apiSchluessel = '';       // wird bei jeder Anfrage im Header X-API-Key mitgeschickt
+let rechte     = [];          // HTTP-Methoden, die die eigene Rolle darf (meldet die API)
 
 const el = id => document.getElementById(id);
 const aktuelleOperation = () => document.querySelector('input[name=operation]:checked').value;
@@ -124,10 +144,11 @@ const istZahl     = typ => istGanzzahl(typ) || /^(decimal|numeric|float|double|r
 // ── 3) Verbindung zur API ──────────────────────────────────────
 // Schickt eine Anfrage und liefert Status, JSON und alles für die Detail-Anzeige
 async function anfrage(methode, pfad, daten = null) {
-    const optionen = { method: methode };
+    // Der Schlüssel weist uns aus. Was wir dürfen, entscheidet die API anhand des Kontos.
+    const optionen = { method: methode, headers: { 'X-API-Key': apiSchluessel } };
     if (daten !== null) {
-        optionen.headers = { 'Content-Type': 'application/json' };
-        optionen.body    = JSON.stringify(daten);
+        optionen.headers['Content-Type'] = 'application/json';
+        optionen.body = JSON.stringify(daten);
     }
     const url     = new URL(API + pfad, location.href).href;
     const antwort = await fetch(url, optionen);
@@ -144,7 +165,7 @@ function verbindungsfehler(fehler) {
 }
 
 
-// ── 4) Start: Übersicht laden, Tabellen-Auswahl füllen ─────────
+// ── 4) Anmelden und Start: Übersicht laden, Tabellen-Auswahl füllen ──
 async function start() {
     let r;
     try {
@@ -152,17 +173,64 @@ async function start() {
     } catch (fehler) {
         return verbindungsfehler(fehler);
     }
+    if (r.status === 401) {            // Schlüssel falsch → zurück zur Anmeldung
+        abmelden();
+        return ergebnisZeigen(r);
+    }
     if (!r.ok || !r.json?.ressourcen) {
         return ergebnisZeigen({ ...r, ok: false,
             json: { fehler: 'Unter dieser Adresse antwortet keine passende API.', details: [r.url, ...(r.json?.details ?? [])] } });
     }
     ressourcen = r.json.ressourcen;
+    rechte     = r.json.angemeldet?.darf ?? [];
 
+    // Anmeldung ausblenden, Formular zeigen
+    const konto = r.json.angemeldet ?? {};
+    el('wer').textContent  = `${konto.name} (Rolle: ${konto.rolle})`;
+    el('anmeldung').hidden  = true;
+    el('angemeldet').hidden = false;
+    el('formular').hidden   = false;
+
+    el('ressource').replaceChildren();
     for (const name of Object.keys(ressourcen)) {
         el('ressource').add(new Option(beschriftungFuer(name), name));
     }
     el('ressource').value = 'fahrzeuge' in ressourcen ? 'fahrzeuge' : Object.keys(ressourcen)[0];
+    operationenFreigeben();
     await ressourceWechseln();
+}
+
+// Operationen, die die eigene Rolle nicht darf, ausgrauen (z. B. darf "nutzer" nur GET).
+// Das ist nur Bequemlichkeit – verboten wird es von der API (403), nicht hier.
+function operationenFreigeben() {
+    for (const knopf of document.querySelectorAll('input[name=operation]')) {
+        knopf.disabled = !rechte.includes(METHODEN[knopf.value]);
+        knopf.closest('label').title = knopf.disabled ? 'Deine Rolle darf das nicht' : '';
+    }
+    if (document.querySelector('input[name=operation]:checked')?.disabled) {
+        el('op-GET').checked = true;
+    }
+}
+
+function abmelden() {
+    apiSchluessel = '';
+    schluesselMerken('');
+    el('schluessel').value  = '';
+    el('anmeldung').hidden  = false;
+    el('angemeldet').hidden = true;
+    el('formular').hidden   = true;
+}
+
+// Schlüssel nur für diesen Browser-Tab merken (sessionStorage), damit Neuladen nicht abmeldet.
+// Beim Schließen des Tabs ist er weg.
+function schluesselLaden() {
+    try { return sessionStorage.getItem('apiSchluessel') ?? ''; } catch { return ''; }
+}
+function schluesselMerken(wert) {
+    try {
+        if (wert) sessionStorage.setItem('apiSchluessel', wert);
+        else      sessionStorage.removeItem('apiSchluessel');
+    } catch { /* ohne Speicher geht es auch, dann nur ohne Merken */ }
 }
 
 // Andere Tabelle gewählt: Auswahllisten laden, Felder neu bauen
@@ -365,6 +433,7 @@ el('formular').addEventListener('submit', async (ereignis) => {
     }
 
     ergebnisZeigen(r);
+    if (r.status === 401) abmelden();   // z. B. Konto inzwischen gelöscht
     if (!r.ok) return;
 
     // Formular auf den Stand der Datenbank bringen
@@ -461,8 +530,17 @@ document.querySelectorAll('input[name=operation]')
 el('felder').addEventListener('input',  e => geaendert.add(e.target.name));
 el('felder').addEventListener('change', e => geaendert.add(e.target.name));
 el('leeren').addEventListener('click', () => { formularLeeren(); el('ergebnis').hidden = true; });
+el('anmeldung').addEventListener('submit', (ereignis) => {
+    ereignis.preventDefault();
+    apiSchluessel = el('schluessel').value.trim();
+    schluesselMerken(apiSchluessel);
+    start();
+});
+el('abmelden').addEventListener('click', () => { abmelden(); el('ergebnis').hidden = true; });
 
-start();
+// Seite neu geladen und schon angemeldet? Dann direkt starten, sonst auf die Anmeldung warten.
+apiSchluessel = schluesselLaden();
+if (apiSchluessel) start();
 </script>
 </body>
 </html>

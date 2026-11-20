@@ -41,6 +41,11 @@ declare(strict_types=1);
  *  Beim Speichern wird geprüft, ob es den Eintrag gibt; beim Löschen, ob er
  *  noch verwendet wird.
  *
+ *  Anmeldung: Jede Anfrage braucht einen API-Schlüssel im Header X-API-Key
+ *  (bei HTML-Formularen ersatzweise im Feld _api_key). Die Konten stehen in
+ *  der Tabelle benutzer (anlegen mit benutzer.sql), was eine Rolle darf, steht
+ *  unten in ROLLEN. Kein gültiger Schlüssel → 401, Rolle darf das nicht → 403.
+ *
  *  Antwort immer JSON. Bei Fehlern: {"fehler": "...", "details": [...]}
  *  Voraussetzung: PHP 8.1 oder neuer.
  * ════════════════════════════════════════════════════════════════ */
@@ -72,6 +77,17 @@ const RESSOURCEN = [
     'fahrzeugarten'  => TBL_FAHRZEUGARTEN,
     'treibstoffe'    => TBL_TREIBSTOFFE,
     'fahrzeughalter' => TBL_FAHRZEUGHALTER,
+];
+
+// Konten für die Anmeldung. Diese Tabelle NIE in RESSOURCEN aufnehmen,
+// sonst könnte jeder Admin die Konten über die API lesen und ändern.
+const TBL_BENUTZER = 'benutzer';
+
+// Was darf welche Rolle? Die Rolle steht beim Konto in der Tabelle benutzer.
+// Eine neue Rolle = eine Zeile ergänzen. Unbekannte Rollen dürfen nichts.
+const ROLLEN = [
+    'nutzer' => ['GET'],                                     // nur lesen
+    'admin'  => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],   // alles
 ];
 
 const LIMIT_STANDARD = 100;   // so viele Datensätze liefert eine Liste ohne ?limit=
@@ -269,6 +285,24 @@ function primaerschluessel(string $tabelle): string
         fehler(500, "Tabelle \"$tabelle\" braucht genau einen Primärschlüssel für Zugriffe per ID.");
     }
     return (string) $pk[0];
+}
+
+
+// Sucht das Konto zum API-Schlüssel. In der Tabelle steht nur die SHA-256-Prüfsumme
+// des Schlüssels, nie der Schlüssel selbst. Ergebnis: ['Name' => …, 'Rolle' => …] oder null.
+function benutzerFinden(string $schluessel): ?array
+{
+    try {
+        $abfrage = db()->prepare('SELECT Name, Rolle FROM ' . bezeichner(TBL_BENUTZER) . ' WHERE Schluessel = ?');
+        $abfrage->execute([hash('sha256', $schluessel)]);
+    } catch (PDOException $e) {
+        if ((int) ($e->errorInfo[1] ?? 0) === 1146) {   // 1146 = Tabelle gibt es nicht
+            fehler(500, 'Die Tabelle "' . TBL_BENUTZER . '" fehlt. Bitte benutzer.sql in phpMyAdmin importieren.');
+        }
+        throw $e;
+    }
+    $konto = $abfrage->fetch();
+    return $konto === false ? null : $konto;
 }
 
 
@@ -574,7 +608,7 @@ header('Content-Type: application/json; charset=UTF-8');
 // CORS: erlaubt Aufrufe per JavaScript von anderen Adressen/Ports (z. B. localhost:5173)
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override');
+header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override, X-API-Key');
 header('Access-Control-Expose-Headers: Location');
 
 // 6b) Route aus der URL lesen
@@ -621,9 +655,25 @@ if ($methode === 'POST') {
         fehler(400, 'Unbekannte Operation. Erlaubt: GET, POST, PUT (oder UPDATE), PATCH, DELETE.');
     }
 }
+
+// 6d) Anmeldung: Wer fragt (sonst 401), und darf seine Rolle diese Methode (sonst 403)?
+//     Der Schlüssel kommt im Header X-API-Key – bei HTML-Formularen ersatzweise im Feld _api_key.
+//     Die Rolle schickt der Client NICHT mit: Die steht beim Konto in der Datenbank.
+$schluessel = $_SERVER['HTTP_X_API_KEY'] ?? $daten['_api_key'] ?? '';
+$konto      = is_string($schluessel) && trim($schluessel) !== '' ? benutzerFinden(trim($schluessel)) : null;
+if ($konto === null) {
+    fehler(401, 'Nicht angemeldet: gültigen API-Schlüssel im Header X-API-Key mitschicken.');
+}
+$rechte = ROLLEN[$konto['Rolle']] ?? [];
+if (!in_array($methode, $rechte, true)) {
+    fehler(403, "Die Rolle \"{$konto['Rolle']}\" darf kein $methode.",
+           ['Erlaubt: ' . ($rechte === [] ? 'nichts' : implode(', ', $rechte))]);
+}
+
 $daten = ohneSteuerfelder($daten);
 
-// 6d) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, was es gibt
+// 6e) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, was es gibt
+//     und was er selbst darf (angemeldet.darf)
 if ($ressource === '') {
     if ($methode !== 'GET') {
         fehler(405, 'Auf der Übersicht ist nur GET erlaubt.');
@@ -632,7 +682,10 @@ if ($ressource === '') {
     foreach (RESSOURCEN as $name => $tabelle) {
         $uebersicht[$name] = ['url' => "$apiUrl/$name", 'felder' => spalten($tabelle)];
     }
-    antwort(200, ['ressourcen' => $uebersicht]);
+    antwort(200, [
+        'angemeldet' => ['name' => $konto['Name'], 'rolle' => $konto['Rolle'], 'darf' => $rechte],
+        'ressourcen' => $uebersicht,
+    ]);
 }
 
 if (!isset(RESSOURCEN[$ressource])) {
@@ -652,7 +705,7 @@ if ($id === null && in_array($methode, ['PUT', 'PATCH', 'DELETE'], true)) {
     }
 }
 
-// 6e) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
+// 6f) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
 $status = 200;
 
 switch ($methode) {
@@ -696,5 +749,5 @@ switch ($methode) {
         fehler(405, "Methode $methode wird nicht unterstützt.");
 }
 
-// 6f) Antwort ausgeben
+// 6g) Antwort ausgeben
 antwort($status, $ergebnis);
