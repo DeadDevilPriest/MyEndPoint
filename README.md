@@ -1,1221 +1,1008 @@
-# Data Gateway
+# MyEndPoint – universelle REST-API
 
-Ein universelles HTTP-REST-Gateway in PHP. Es nimmt Anfragen in verschiedenen Formaten entgegen (JSON, CSV, XML, YAML …), übersetzt sie über ein zentrales Mapping in der Konfiguration und speichert bzw. liest die Daten aus verschiedenen Backends (MariaDB, MongoDB, Dateien …). Zugriffe werden über Rollen mit getrennten Rechten für **Lesen, Anlegen, Ändern und Löschen** gesteuert.
+Eine REST-API in PHP, die jede freigegebene Datenbanktabelle per HTTP lesbar, anlegbar, änderbar und löschbar macht. Felder, Pflichtfelder und Verweise liest die API **selbst aus der Datenbank**. Eine neue Spalte braucht keine Codeänderung.
 
-> **Status: Konzeptphase.** Dieses README beschreibt die geplante Architektur und das Zielverhalten. Der Umsetzungsstand ist in der [Roadmap](#roadmap) festgehalten.
+Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehrere Ein- und Ausgabeformate (JSON, Formular, CSV, XML …), mehrere Speicher-Backends (MariaDB, MongoDB, Dateien) und Rechte pro Ressource, gesteuert über eine zentrale Konfiguration.
+
+> **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON). Alles, was in diesem README mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt. Den Fortschritt zeigt die [Roadmap](#roadmap).
 
 ---
 
 ## Inhalt
 
-- [Features](#features)
-- [Grundidee](#grundidee)
-- [Designentscheidungen](#designentscheidungen)
-- [Anforderungen](#anforderungen)
-- [Installation](#installation)
-- [Ordnerstruktur](#ordnerstruktur)
-- [Konfiguration](#konfiguration)
-- [Authentifizierung und Rollen](#authentifizierung-und-rollen)
+- [Festgelegte Entscheidungen](#festgelegte-entscheidungen)
+- [Schnellstart (XAMPP)](#schnellstart-xampp)
+- [Projektinhalt](#projektinhalt)
+- [Überblick: Ist-Stand und Ziel](#überblick-ist-stand-und-ziel)
+- [Grundidee von 2.0](#grundidee-von-20)
 - [API-Referenz](#api-referenz)
+- [Anmeldung und Rollen](#anmeldung-und-rollen)
+- [Konfiguration](#konfiguration)
 - [Formate (Codecs)](#formate-codecs)
-- [Datenmodell](#datenmodell)
+- [Datenmodell und Verweise](#datenmodell-und-verweise)
 - [Speicher-Backends (Treiber)](#speicher-backends-treiber)
-- [Fehlerbehandlung](#fehlerbehandlung)
-- [Grenzen und Performance](#grenzen-und-performance)
+- [API-Dokumentation (Swagger)](#api-dokumentation-swagger)
+- [Architektur und Umbau](#architektur-und-umbau)
 - [Serverauslastung und Anforderungen](#serverauslastung-und-anforderungen)
 - [Sicherheit](#sicherheit)
-- [Erweitern](#erweitern)
 - [Bewusst nicht enthalten](#bewusst-nicht-enthalten)
 - [Roadmap](#roadmap)
 
 ---
 
-## Features
+## Festgelegte Entscheidungen
 
-- **Ein Einstiegspunkt für alle Daten**: `GET/POST/PUT/PATCH/DELETE /api/{ressource}/{id?}`
-- **Format-unabhängig**: Eingabe über `Content-Type`, Ausgabe über `Accept`. CSV rein und XML raus funktioniert ohne Extra-Code.
-- **Backend-unabhängig**: Ob eine Ressource in MariaDB, MongoDB oder einer CSV-Datei liegt, steht nur in der Konfiguration.
-- **Mapping statt Code**: Feldnamen, Aliase, Typen, Pflichtfelder und Sichtbarkeit werden in `config/gateway.php` definiert.
-- **Rollenbasierte Rechte** pro Ressource in kompakter CRUD-Schreibweise (`'admin' => 'crud'`), inklusive „nur eigene Datensätze“ (`:own`).
-- **Fail fast**: Eine fehlerhafte Konfiguration verhindert den Start, statt zur Laufzeit Lücken zu öffnen.
-- **Reiner Übersetzer**: `POST /api/_convert` wandelt Formate um, ohne etwas zu speichern.
-- **Selbstbeschreibend**: `GET /api/_meta` listet Ressourcen, Formate und die eigenen Rechte.
+| Thema | Entscheidung | Begründung |
+|---|---|---|
+| Datenverarbeitung | **Alles in Arrays**, kein Streaming | einfache Schnittstellen, leicht zu testen |
+| Backend-Wahl | **nur über die Konfiguration** | ein Client kann nie bestimmen, wo Daten landen |
+| Datenstruktur | **nur flache Datensätze**, Verweise als IDs | jedes Format kann jede Zeile abbilden, auch CSV |
+| Felder | **automatisch aus der Datenbank**, Config nur für Ausnahmen | so wie `api.php` es heute schon macht |
+| Abwärtskompatibilität | `api.php/<ressource>/<id>`, Formulare und `client/index.php` funktionieren weiter | die Aufgabe baut darauf auf |
+| Sprache | **Deutsch** für Config, JSON-Schlüssel und Fehlermeldungen (wie heute), **Englisch** für Klassen und Namespaces (PHP-Konvention) | Clients sehen nur Deutsch, der Code folgt PSR-4 |
+| Anmeldung | **Basic Auth bleibt**, Token-Login kommt dazu 🔜 | Basic ist einfach, aber teuer (siehe [Serverauslastung](#serverauslastung-und-anforderungen)) |
 
 ---
 
-## Grundidee
+## Schnellstart (XAMPP)
 
-### Hub-and-Spoke statt „jedes Format mit jedem“
+**Voraussetzung:** PHP 8.1 oder neuer, MariaDB/MySQL, Apache mit `mod_rewrite` (bei XAMPP aktiv).
 
-Alle Formate und Backends sprechen mit einem **neutralen Datensatz** in der Mitte. Ein neues Format braucht dann genau einen Codec und nicht einen Konverter pro anderem Format.
+1. Den Ordner nach `htdocs/MyEndPoint` kopieren.
+2. Die Datenbank `fahrzeugverwaltung` mit den Tabellen `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe` und `fahrzeughalter` anlegen.
+   > Ein SQL-Dump dieser Datenbank liegt noch nicht im Repo (siehe [Roadmap](#roadmap)).
+3. `benutzer.sql` in phpMyAdmin importieren: oben links auf den Server klicken → Reiter „SQL“ → Inhalt einfügen → OK.
+4. Einen Passwort-Hash erzeugen und ein Konto anlegen:
+
+   ```bash
+   php -r "echo password_hash('geheim', PASSWORD_DEFAULT);"
+   ```
+
+   ```sql
+   INSERT INTO benutzerverwaltung.benutzer (username, useremail, password, rolle)
+   VALUES ('admin', 'admin@test.com', '<HASH>', 'admin');
+   ```
+
+5. Ausprobieren:
+
+   ```bash
+   curl -u admin@test.com:geheim http://localhost/MyEndPoint/api.php
+   curl -u admin@test.com:geheim http://localhost/MyEndPoint/api.php/fahrzeuge
+   ```
+
+6. Im Browser:
+   - `http://localhost/MyEndPoint/client/`: Formular-Client
+   - `http://localhost/MyEndPoint/docs.html`: Swagger-Doku zum Ausprobieren
+
+---
+
+## Projektinhalt
+
+| Datei / Ordner | Inhalt | Status |
+|---|---|---|
+| `api.php` | Die API (Version 1), eine Datei, prozedural | ✅ läuft |
+| `.htaccess` | URLs ohne `api.php`, reicht den `Authorization`-Header an PHP weiter | ✅ |
+| `benutzer.sql` | Konten-Datenbank `benutzerverwaltung`, getrennt von den Fahrzeugdaten | ✅ |
+| `client/index.php` | HTML/JS-Client mit `fetch()` und Basic Auth | ✅ |
+| `openapi.yaml` | OpenAPI-3-Beschreibung, Pfade von Hand gepflegt | ✅ (wird ersetzt, siehe [Swagger](#api-dokumentation-swagger)) |
+| `docs.html` | Swagger UI, lädt `openapi.yaml` | ✅ |
+| `Aufgabe.md` | Aufgabenstellung | – |
+| `api_outerlayer/fahrzeug.php` | erster Ansatz für Objekte | ⚠️ ungültiges PHP (`class fahrzeug()`), wird ersetzt |
+
+---
+
+## Überblick: Ist-Stand und Ziel
+
+| Funktion | Version 1 (`api.php`) | Ziel 2.0 |
+|---|---|---|
+| CRUD über HTTP (GET, POST, PUT, PATCH, DELETE) | ✅ | ✅ |
+| Felder automatisch aus der Datenbank | ✅ bei jedem Request | ✅ gecacht 🔜 |
+| Fremdschlüssel + Namensregel erkennen | ✅ | ✅ auch über Backends hinweg 🔜 |
+| Verweise beim Speichern / Löschen prüfen | ✅ | ✅ |
+| Filter `?spalte=wert`, Platzhalter `*` | ✅ | ✅ |
+| Filter mit Operatoren (`?leistung[gt]=100`) | ❌ | 🔜 |
+| Sortierung, `limit`, `offset` | ✅ | ✅ |
+| HTML-Formulare (`_method`, `operation`, ID als Feld) | ✅ | ✅ |
+| Basic Auth gegen eigene Konten-DB | ✅ | ✅ |
+| Token-Login (`POST /_login`) | ❌ | 🔜 |
+| Begrenzung von Fehlversuchen | ❌ | 🔜 |
+| Rechte pro HTTP-Methode (global) | ✅ | ✅ als Standard |
+| Rechte pro Ressource, Felder verstecken | ❌ | 🔜 |
+| Eingabe JSON / Formular | ✅ | ✅ |
+| Eingabe CSV, XML, YAML | ❌ | 🔜 |
+| Ausgabe nur JSON | ✅ | JSON + CSV, XML, YAML, SQL 🔜 |
+| MariaDB / MySQL | ✅ | ✅ |
+| MongoDB, Dateien als Speicher | ❌ | 🔜 |
+| Konfiguration | Konstanten in `api.php` | `config/gateway.php` + `.env` 🔜 |
+| Swagger-Doku | statische `openapi.yaml` | automatisch erzeugt (`/_openapi`) 🔜 |
+| Aufbau | eine Datei | Klassen unter `src/` 🔜 |
+
+---
+
+## Grundidee von 2.0
+
+### Hub-and-Spoke: alles läuft über den neutralen Datensatz
 
 ```
- Eingabe (HTTP)                                         Ausgabe (HTTP)
- JSON ─┐                                             ┌─→ JSON
- CSV ──┤                                             ├─→ CSV
- XML ──┼─→ Codec::decode ─→ [ neutrale Zeilen ] ─────┼─→ XML
- YAML ─┘                         │     ▲             ├─→ YAML
-                                 ▼     │             └─→ SQL (INSERT)
-                              FieldMapper
-                                 │     ▲
-                                 ▼     │
-                       Driver (MariaDB | MongoDB | Datei)
+ Eingabe (HTTP)                                           Ausgabe (HTTP)
+ JSON ───────┐                                         ┌─→ JSON
+ Formular ───┤                                         ├─→ CSV
+ CSV ────────┼─→ Codec::decode ─→ [ neutrale Zeilen ] ─┼─→ XML
+ XML ────────┤                         │     ▲         ├─→ YAML
+ YAML ───────┘                         ▼     │         └─→ SQL (INSERT)
+                                    FieldMapper
+                                       │     ▲
+                                       ▼     │
+                         Treiber (MariaDB | MongoDB | Datei)
 ```
 
-### Drei streng getrennte Bausteine
+Ein neues Format braucht genau **einen** Codec, ein neues Backend genau **einen** Treiber. Formate und Backends lassen sich frei kombinieren: Daten aus MongoDB können z. B. als CSV ausgegeben werden, ohne dafür eigenen Code zu schreiben.
+
+### Drei getrennte Bausteine
 
 | Baustein | Aufgabe | Weiß nichts über |
 |---|---|---|
 | **Codec** | Format ↔ neutrale Zeilen | Datenbanken, Rechte |
-| **Driver** | neutrale Zeilen ↔ Speicher | Formate, Rechte |
-| **Mapper** | API-Felder ↔ Speicher-Spalten, Typen, Validierung | Formate, Speicherart |
+| **Treiber** | neutrale Zeilen ↔ Speicher, liefert das Schema | Formate, Rechte |
+| **FieldMapper** | Namen angleichen, Ausnahmen aus der Config, Prüfung, Verweise | Formate, Speicherart |
 
-Rechte prüft die **AccessPolicy**, bevor einer dieser Bausteine überhaupt aufgerufen wird.
+Die Rechte prüft die **AccessPolicy**, bevor einer dieser Bausteine aufgerufen wird.
 
-### Codecs werden doppelt genutzt
+### Die Datenbank ist das Template
 
-Ein Format kann Übertragungsformat (HTTP-Body) **und** Speicherformat sein. Der `FileDriver` verwendet deshalb dieselben Codecs wie die HTTP-Schicht:
+Wie in `api.php` heute: Die API fragt die Datenbank, welche Spalten es gibt. Jeder Treiber bekommt dafür eine Methode `schema()`:
 
-```
-FileDriver(CsvCodec)   → CSV-Datei als Speicher
-FileDriver(XmlCodec)   → XML-Datei als Speicher
-FileDriver(JsonCodec)  → JSON-Datei als Speicher
-```
+| Treiber | Woher kommt das Schema? |
+|---|---|
+| PdoDriver (MariaDB …) | aus der Datenbank (`SHOW COLUMNS`, `INFORMATION_SCHEMA`), wie heute `spalten()` |
+| FileDriver (CSV …) | Feldnamen aus der Kopfzeile, Typen aus der Config (sonst `string`) |
+| MongoDriver | MongoDB ist schemalos, **die Felder stehen vollständig in der Config** |
+
+Die Konfiguration muss deshalb nur Ausnahmen enthalten: versteckte Felder, Umbenennungen, eigene Rechte.
 
 ### Ablauf eines Requests
 
 ```
-1. Request annehmen         → Größenlimit prüfen (413)
-2. Router                   → Methode + /api/{ressource}/{id?}
-3. Authentifizierung        → Token prüfen (401)
-4. AccessPolicy             → Rolle darf Aktion auf Ressource? (403)
-5. Codec(Content-Type)      → Body in neutrale Zeilen (415 / 400)
-6. FieldMapper              → Aliase, Typen, Pflichtfelder (422)
-7. Driver                   → Lesen / Schreiben im Backend (404)
-8. FieldMapper (zurück)     → Spalten → API-Felder, writeonly-Felder entfernen
-9. Codec(Accept)            → neutrale Zeilen ins Zielformat (406)
-10. Response
+ 1. Request annehmen          Größe prüfen                         → 413
+ 2. Router                    api.php/<ressource>/<id?>             → 404
+ 3. Methode bestimmen         echte Methode oder _method/Override   → 400
+ 4. Anmeldung                 Basic Auth oder Token                 → 401
+ 5. AccessPolicy              darf die Rolle diese Aktion?          → 403
+ 6. Codec (Content-Type)      Body → neutrale Zeilen                → 400 / 415
+ 7. FieldMapper               Namen angleichen, Pflichtfelder,
+                              Typen, Verweise prüfen                → 400
+ 8. Treiber                   lesen / schreiben                     → 404 / 409
+ 9. FieldMapper (zurück)      versteckte Felder entfernen
+10. Codec (Accept)            neutrale Zeilen → Ausgabeformat       → 406
+11. Antwort
 ```
 
 ---
 
-## Designentscheidungen
+## API-Referenz
 
-Diese drei Entscheidungen halten das Gateway bewusst einfach.
+### Adressen
 
-### 1. Alles in einem Array, kein Streaming
+Alle drei Schreibweisen sind gleichwertig (die beiden kurzen brauchen die `.htaccess`):
 
-Codecs und Treiber arbeiten mit vollständigen PHP-Arrays.
+```
+http://localhost/MyEndPoint/api.php/fahrzeuge/5
+http://localhost/MyEndPoint/api/fahrzeuge/5
+http://localhost/MyEndPoint/fahrzeuge/5
+```
 
-- **Vorteil**: einfache Interfaces, leicht zu testen, `Content-Length` immer bekannt.
-- **Konsequenz**: Speicherverbrauch wächst mit der Datenmenge. Deshalb gibt es feste Grenzen für Body-Größe und Seitengröße (siehe [Grenzen](#grenzen-und-performance)).
+### Endpunkte
 
-### 2. Backend-Wahl nur über die Konfiguration
+| Methode | Pfad | Wirkung | Recht |
+|---|---|---|---|
+| `GET` | `api.php` | Übersicht: Ressourcen, Felder, eigene Rechte | angemeldet |
+| `GET` | `api.php/<ressource>` | Liste mit Filter, Sortierung, Seiten | `r` |
+| `GET` | `api.php/<ressource>/<id>` | ein Datensatz | `r` |
+| `POST` | `api.php/<ressource>` | anlegen → `201` + `Location`-Header | `c` |
+| `PUT` / `PATCH` | `api.php/<ressource>/<id>` | ändern (nur mitgeschickte Felder) | `u` |
+| `DELETE` | `api.php/<ressource>/<id>` | löschen | `d` |
+| `OPTIONS` | beliebig | CORS-Vorabanfrage → `204` | – |
+| `POST` | `api.php/_login` | Token holen 🔜 | – |
+| `GET` | `api.php/_openapi` | OpenAPI-Beschreibung, automatisch erzeugt 🔜 | angemeldet |
+| `POST` | `api.php/_convert` | Format umwandeln, nichts speichern 🔜 | laut Config |
 
-Welche Ressource in welchem Backend liegt, steht ausschließlich in `config/gateway.php`. Es gibt **keinen** Request-Parameter wie `?target=mongo`.
+Freigegebene Ressourcen: `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe`, `fahrzeughalter`.
 
-- **Vorteil**: Ein Client kann nie beeinflussen, wohin Daten geschrieben oder woher sie gelesen werden.
-- **Konsequenz**: Ein Backend-Wechsel bedeutet: Config ändern und Daten umziehen.
+### HTML-Formulare
 
-> Das Ausgabeformat (`Accept` bzw. `?format=`) darf der Client dagegen frei wählen. Es betrifft nur die Darstellung, nicht den Speicherort.
+Formulare kennen nur `GET` und `POST`. Deshalb wird die gewünschte Methode mitgeschickt:
 
-### 3. Nur flache Datensätze
-
-Eine Zeile ist ein einfaches Schlüssel-Wert-Array mit skalaren Werten. Keine verschachtelten Objekte, keine Listen in Feldern, keine eingebetteten Relationen.
-
-- **Vorteil**: Jedes Format kann jede Zeile verlustfrei abbilden, auch CSV.
-- **Konsequenz**: Beziehungen werden als IDs abgebildet (`besitzer_id: 5`). Verschachtelte Eingaben werden mit `422` abgelehnt.
-
----
-
-## Anforderungen
-
-**Pflicht**
-
-| Komponente | Version / Hinweis |
+| Weg | Beispiel |
 |---|---|
-| PHP | 8.2 oder neuer |
-| `ext-json` | Standard |
-| `ext-pdo` + `ext-pdo_mysql` | für MariaDB / MySQL |
-| `ext-simplexml`, `ext-xmlwriter` | für XML |
-| Composer | für Autoloading |
+| verstecktes Feld `_method` | `<input type="hidden" name="_method" value="DELETE">` |
+| altes Feld `operation` | `GET`, `POST`, `UPDATE` (= `PUT`), `DELETE` |
+| Header | `X-HTTP-Method-Override: PATCH` |
 
-**Optional**: Ein Codec oder Treiber wird nur aktiviert, wenn seine Abhängigkeit installiert ist.
+Steht keine ID in der URL, wird sie aus dem Feld gelesen, das wie der Primärschlüssel heißt (z. B. `FID`). Felder, die mit `_` beginnen, werden nie gespeichert.
 
-| Paket | Wofür |
+### Listen: Filter, Sortierung, Seiten
+
+| Parameter | Beispiel | Wirkung | Status |
+|---|---|---|---|
+| `<spalte>=<wert>` | `?FTID=3` | gleich, mehrere Filter mit UND | ✅ |
+| `*` als Platzhalter | `?Marke=VW*` | `LIKE 'VW%'` | ✅ |
+| `sort` | `?sort=Marke,-Leistung` | sortieren, `-` = absteigend | ✅ |
+| `limit` | `?limit=20` | Seitengröße (Standard 100, max. 1000) | ✅ |
+| `offset` | `?offset=40` | Startposition | ✅ |
+| `<spalte>[op]=<wert>` | `?Leistung[gt]=100` | mit Operator | 🔜 |
+| `fields` | `?fields=FID,Marke` | nur diese Felder ausgeben | 🔜 |
+| `format` | `?format=csv` | Ausgabeformat statt `Accept`-Header | 🔜 |
+
+Groß-/Kleinschreibung der Spaltennamen ist egal (`fid` = `FID`). Leere Filterwerte werden ignoriert. Unbekannte Spalten führen zu `400` mit der Liste der erlaubten Felder.
+
+**Geplante Operatoren** (PHP macht aus `?x[gt]=1` automatisch ein Array):
+
+| Operator | Bedeutung | Beispiel |
+|---|---|---|
+| `eq` | gleich (Standard) | `?FID[eq]=5` |
+| `ne` | ungleich | `?FTID[ne]=2` |
+| `lt`, `lte` | kleiner (gleich) | `?Leistung[lt]=100` |
+| `gt`, `gte` | größer (gleich) | `?Baujahr[gte]=2015` |
+| `in` | in Liste | `?FTID[in]=1,2,3` |
+| `null` | ist (nicht) leer | `?FHID[null]=true` |
+
+### Antworten
+
+**Liste**: Bei JSON mit Hülle (so liest es `client/index.php`):
+
+```json
+{
+  "daten":  [ { "FID": 1, "Marke": "VW", "FTID": 3 } ],
+  "gesamt": 42,
+  "limit":  100,
+  "offset": 0
+}
+```
+
+🔜 Zusätzlich stehen die Seitenangaben **immer** in den Headern, damit sie auch bei CSV und XML verfügbar sind. Diese Formate enthalten nur die Zeilen:
+
+```http
+X-Total-Count: 42
+X-Limit: 100
+X-Offset: 0
+```
+
+**Einzelner Datensatz, Anlegen, Ändern**: der Datensatz so, wie er jetzt in der Datenbank steht. Beim Anlegen zusätzlich `201 Created` und `Location: …/api.php/fahrzeuge/43`.
+
+**Löschen**:
+
+```json
+{ "meldung": "Datensatz \"43\" wurde gelöscht.", "geloescht": { "FID": 43, "Marke": "VW" } }
+```
+
+**Übersicht** (`GET api.php`):
+
+```json
+{
+  "angemeldet": { "name": "admin", "email": "admin@test.com", "rolle": "admin",
+                  "darf": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+  "ressourcen": {
+    "fahrzeuge": {
+      "url": "http://localhost/MyEndPoint/api.php/fahrzeuge",
+      "felder": {
+        "FID":  { "typ": "int(11)", "pk": true,  "auto": true,  "null": false, "pflicht": false, "verweis": null },
+        "FTID": { "typ": "int(11)", "pk": false, "auto": false, "null": false, "pflicht": true,
+                  "verweis": { "ressource": "fahrzeugtypen", "spalte": "FTID" } }
+      }
+    }
+  }
+}
+```
+
+Ein Client kann daraus Formulare und Auswahllisten bauen. `client/index.php` macht genau das.
+
+### Fehler
+
+Fehler kommen immer als JSON, auch wenn ein anderes Ausgabeformat angefragt wurde:
+
+```json
+{ "fehler": "Ungültige Eingaben.", "details": ["Pflichtfeld \"Marke\" fehlt."] }
+```
+
+| Status | Wann |
 |---|---|
-| `ext-mongodb` + `mongodb/mongodb` | MongoDB-Treiber |
-| `symfony/yaml` | YAML-Codec |
-| `phpoffice/phpspreadsheet` | XLSX/ODS-Codec |
-| `ext-pdo_pgsql`, `ext-pdo_sqlite` | weitere SQL-Datenbanken über den PDO-Treiber |
+| `400` | ungültige Eingabe oder Parameter, Pflichtfeld fehlt, Verweis zeigt ins Leere |
+| `401` | nicht angemeldet, E-Mail/Passwort falsch |
+| `403` | Rolle darf diese Aktion nicht |
+| `404` | Ressource oder Datensatz unbekannt |
+| `405` | Methode passt nicht zum Pfad |
+| `406` | Ausgabeformat nicht verfügbar 🔜 |
+| `409` | doppelter Wert, oder Datensatz wird noch verwendet |
+| `413` | Anfrage zu groß 🔜 |
+| `415` | Eingabeformat nicht verfügbar 🔜 |
+| `429` | zu viele Fehlversuche bei der Anmeldung 🔜 |
+| `500` | interner Fehler |
 
-Ist eine optionale Abhängigkeit nicht installiert, taucht das Format bzw. der Treiber nicht in `/api/_meta` auf. Eine Ressource, die einen fehlenden Treiber benutzt, verhindert den Start (siehe [Validierung](#validierung-beim-start)).
+Datenbankfehler, die der Client verursacht hat, werden übersetzt (heute `MYSQL_FEHLER`, künftig im jeweiligen Treiber):
 
----
+| MySQL-Fehler | Status | Meldung |
+|---|---|---|
+| 1048 | 400 | Ein Pflichtfeld ist leer. |
+| 1062 | 409 | Ein Datensatz mit diesem Wert existiert bereits. |
+| 1264 | 400 | Eine Zahl liegt außerhalb des erlaubten Bereichs. |
+| 1265, 1366 | 400 | Ein Wert passt nicht zum Spaltentyp. |
+| 1292 | 400 | Ein Datum oder eine Uhrzeit ist ungültig. |
+| 1406 | 400 | Ein Text ist zu lang. |
+| 1451 | 409 | Der Datensatz wird noch von einer anderen Tabelle verwendet. |
+| 1452 | 400 | Ein Verweis zeigt auf einen Datensatz, den es nicht gibt. |
 
-## Installation
+`details` enthält technische Meldungen (z. B. den SQL-Fehler) **nur im Debug-Modus**.
+
+### Beispiele
 
 ```bash
-# 1. Abhängigkeiten installieren
-composer install
+# Liste, gefiltert und sortiert
+curl -u admin@test.com:geheim \
+     "http://localhost/MyEndPoint/api.php/fahrzeuge?Marke=VW*&sort=-Leistung&limit=10"
 
-# 2. Optionale Pakete nach Bedarf
-composer require symfony/yaml
-composer require mongodb/mongodb
+# Anlegen (JSON)
+curl -u admin@test.com:geheim -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"Marke": "VW", "Modell": "Golf", "FTID": 3}' \
+     http://localhost/MyEndPoint/api.php/fahrzeuge
 
-# 3. Umgebungsvariablen anlegen
-cp config/.env.example config/.env
-#    → Secrets eintragen (siehe unten)
+# Ändern (nur ein Feld)
+curl -u admin@test.com:geheim -X PATCH \
+     -H "Content-Type: application/json" \
+     -d '{"Leistung": 110}' \
+     http://localhost/MyEndPoint/api.php/fahrzeuge/43
 
-# 4. Konfiguration anpassen
-#    config/gateway.php
+# Löschen per Formular-Daten
+curl -u admin@test.com:geheim -X POST \
+     -d "_method=DELETE&FID=43" \
+     http://localhost/MyEndPoint/api.php/fahrzeuge
 
-# 5. Konfiguration prüfen
-php bin/check-config.php
+# 🔜 Liste als CSV
+curl -u admin@test.com:geheim -H "Accept: text/csv" \
+     http://localhost/MyEndPoint/api.php/fahrzeuge
 
-# 6. Lokal starten (nur Entwicklung)
-php -S localhost:8080 -t public
+# 🔜 Mehrere Datensätze per CSV anlegen
+curl -u admin@test.com:geheim -X POST \
+     -H "Content-Type: text/csv" --data-binary @fahrzeuge.csv \
+     http://localhost/MyEndPoint/api.php/fahrzeuge
 ```
 
-Im Produktivbetrieb zeigt der Webserver (Apache/nginx) mit seinem Document Root auf `public/`. **Nur** `public/index.php` ist von außen erreichbar, `config/` und `src/` liegen außerhalb.
-
-### Beispiel `config/.env`
-
-```dotenv
-GATEWAY_TOKEN_SECRET=ein-langer-zufälliger-wert-mindestens-32-zeichen
-GATEWAY_DEBUG=0
-DB_MAIN_USER=gateway
-DB_MAIN_PASS=geheim
-MONGO_URI=mongodb://mongo:27017
-```
-
-> `config/.env` gehört **nicht** ins Git-Repository. Im Repo liegt nur `config/.env.example` ohne echte Werte.
+> Die Spaltennamen in den Beispielen sind Platzhalter. Die echten Namen liefert `GET api.php`.
 
 ---
 
-## Ordnerstruktur
+## Anmeldung und Rollen
 
-```
-gateway/
-├─ public/
-│   └─ index.php              ← einziger Einstiegspunkt
-├─ config/
-│   ├─ gateway.php            ← Verbindungen, Ressourcen, Rollen, Limits
-│   ├─ .env                   ← Secrets (nicht im Git)
-│   └─ .env.example
-├─ bin/
-│   └─ check-config.php       ← Konfiguration validieren
-├─ src/
-│   ├─ Http/                  ← Kernel, Router, Request, Response, ErrorResponse
-│   ├─ Config/                ← ConfigLoader, ConfigValidator
-│   ├─ Auth/                  ← TokenVerifier, Principal
-│   ├─ Policy/                ← AccessPolicy, AccessRule
-│   ├─ Codec/                 ← Codec, CodecRegistry, JsonCodec, CsvCodec, XmlCodec,
-│   │                            YamlCodec, XlsxCodec, SqlCodec
-│   ├─ Driver/                ← Driver, DriverFactory, PdoDriver, MongoDriver, FileDriver
-│   ├─ Mapping/               ← ResourceMap, FieldMap, FieldMapper, TypeCaster, Hydrator
-│   └─ Query/                 ← Query, Filter, QueryParser
-├─ tests/
-├─ composer.json
-└─ README.md
+### Heute: HTTP Basic Auth
+
+Jede Anfrage schickt E-Mail (oder Benutzername) und Passwort mit:
+
+```http
+Authorization: Basic <Base64 von "email:passwort">
 ```
 
-Eine Klasse pro Datei, ein Namespace pro Ordner, Autoloading über Composer (PSR-4).
+- HTML-Formulare können keine Header setzen und nutzen ersatzweise die Felder `_email` und `_passwort`.
+- Die Konten liegen in der eigenen Datenbank `benutzerverwaltung` (siehe `benutzer.sql`), die Passwörter nur als Hash von `password_hash()`.
+- **Die Rolle schickt der Client nie mit.** Sie steht beim Konto in der Spalte `rolle`.
+- Absichtlich ohne `WWW-Authenticate`-Header, damit der Browser kein eigenes Login-Fenster öffnet.
+
+### 🔜 Zusätzlich: Token-Login
+
+Basic Auth prüft bei **jedem** Request das Passwort mit bcrypt. Das ist absichtlich langsam (grob 50–100 ms) und begrenzt den Durchsatz stark (siehe [Serverauslastung](#serverauslastung-und-anforderungen)). Deshalb kommt ein Login dazu, der das Passwort nur einmal prüft:
+
+```bash
+curl -X POST -u admin@test.com:geheim http://localhost/MyEndPoint/api.php/_login
+```
+
+```json
+{ "token": "eyJhbGciOiJIUzI1NiJ9...", "gueltigBis": "2026-11-23T22:00:00+01:00", "rolle": "admin" }
+```
+
+Alle weiteren Requests schicken nur noch das Token. Dessen Prüfung (HMAC) dauert Mikrosekunden:
+
+```http
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
+```
+
+- Basic Auth bleibt für einfache Clients, Swagger und die Aufgabe erhalten.
+- `client/index.php` wird auf Token umgestellt.
+- **Fehlversuche werden begrenzt**: nach 5 Fehlversuchen pro IP innerhalb einer Minute folgt `429`.
+
+### Rollen und Rechte
+
+**Heute** gelten die Rechte global pro HTTP-Methode:
+
+```php
+const ROLLEN = [
+    'nutzer' => ['GET'],
+    'admin'  => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+];
+```
+
+**🔜 Künftig** in CRUD-Buchstaben, als globaler Standard plus Override pro Ressource:
+
+| Buchstabe | Aktion | HTTP-Methode |
+|---|---|---|
+| `c` | anlegen | `POST` |
+| `r` | lesen | `GET` |
+| `u` | ändern | `PUT`, `PATCH` |
+| `d` | löschen | `DELETE` |
+
+```php
+'rollen' => [                     // Standard für alle Ressourcen
+    'nutzer' => 'r',
+    'admin'  => 'crud',
+],
+'ressourcen' => [
+    'fahrzeughalter' => [
+        'rechte' => ['nutzer' => '', 'admin' => 'crud'],   // Override: Personendaten
+    ],
+],
+```
+
+Das Recht einer Rolle auf eine Ressource ergibt sich so:
+
+```
+Recht = ressourcen[x].rechte[rolle]  ??  rollen[rolle]  ??  ''   (nichts)
+```
+
+Unbekannte Rollen dürfen nichts. Rolle stimmt nicht → `403`.
 
 ---
 
 ## Konfiguration
 
-Die gesamte Konfiguration ist **ein PHP-Array** in `config/gateway.php`. PHP-Arrays werden von OPcache zwischengespeichert und müssen nicht bei jedem Request geparst werden.
+### Heute: Konstanten in `api.php`
 
-### Vollständiges Beispiel
+| Konstante | Bedeutung |
+|---|---|
+| `DB2_DSN`, `DB2_USER`, `DB2_PASS` | Verbindung zur Fahrzeug-Datenbank |
+| `AUTH_DSN`, `AUTH_USER`, `AUTH_PASS`, `TBL_BENUTZER` | Verbindung zur Konten-Datenbank |
+| `RESSOURCEN` | Whitelist: Name in der URL → Tabelle |
+| `ROLLEN` | Rolle → erlaubte HTTP-Methoden |
+| `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | Seitengröße 100 / höchstens 1000 |
+| `API_DEBUG` | genaue Fehlermeldungen in der Antwort |
+| `MYSQL_FEHLER` | MySQL-Fehlernummer → Status + Meldung |
+
+### 🔜 Künftig: `config/gateway.php` + `.env`
+
+Die Konfiguration wird ein PHP-Array. OPcache hält es im Speicher, es muss also nicht bei jedem Request geparst werden. Passwörter stehen nicht darin, sondern in `config/.env`.
 
 ```php
 <?php
 // config/gateway.php
 return [
 
-    // ── Grenzen ─────────────────────────────────────────────────────────
-    'limits' => [
-        'maxBodyBytes' => 5 * 1024 * 1024,   // größere Requests → 413
-        'maxBodyBytesByFormat' => [
-            'xlsx' => 1 * 1024 * 1024,       // XLSX braucht sehr viel RAM (siehe Serverauslastung)
-        ],
-        'defaultLimit' => 50,                // Seitengröße ohne ?limit
-        'maxLimit'     => 500,               // Obergrenze für ?limit
+    'debug' => getenv('API_DEBUG') === '1',      // Standard: aus
+
+    'grenzen' => [
+        'maxAnfrageBytes' => 5 * 1024 * 1024,     // größer → 413
+        'maxAnfrageBytesProFormat' => ['xlsx' => 1 * 1024 * 1024],
+        'limitStandard'   => 100,
+        'limitMaximum'    => 1000,
     ],
 
-    // ── Debug (nur Entwicklung!) ────────────────────────────────────────
-    // Fügt jeder Antwort X-Debug-Memory und X-Debug-Time hinzu.
-    'debug' => (bool) getenv('GATEWAY_DEBUG'),
-
-    // ── Authentifizierung ───────────────────────────────────────────────
-    'auth' => [
-        'secret'     => getenv('GATEWAY_TOKEN_SECRET'),
-        'header'     => 'Authorization',     // "Bearer <token>"
-        'cookie'     => 'auth_token',        // alternativ für Browser-Frontends
-        'claims'     => [
-            'user'  => 'sub',                // Benutzer-ID
-            'role'  => 'role',               // Rollenname
-            'level' => 'level',              // Berechtigungsstufe (optional)
-        ],
+    'cors' => [
+        'erlaubteUrspruenge' => ['http://localhost', 'http://localhost:5173'],
     ],
 
-    // ── Verbindungen ────────────────────────────────────────────────────
-    'connections' => [
-        'main' => [
-            'driver' => 'pdo',
-            'dsn'    => 'mysql:host=mysql;dbname=app;charset=utf8mb4',
-            'user'   => getenv('DB_MAIN_USER'),
-            'pass'   => getenv('DB_MAIN_PASS'),
+    'verbindungen' => [
+        'fahrzeuge' => [
+            'treiber' => 'pdo',
+            'dsn'     => 'mysql:host=127.0.0.1;dbname=fahrzeugverwaltung;charset=utf8mb4',
+            'user'    => getenv('DB_USER'),
+            'pass'    => getenv('DB_PASS'),
         ],
-        'logs' => [
-            'driver'   => 'mongo',
-            'uri'      => getenv('MONGO_URI'),
-            'database' => 'logs',
+        'konten' => [
+            'treiber' => 'pdo',
+            'dsn'     => 'mysql:host=127.0.0.1;dbname=benutzerverwaltung;charset=utf8mb4',
+            'user'    => getenv('AUTH_USER'),
+            'pass'    => getenv('AUTH_PASS'),
         ],
-        'files' => [
-            'driver'    => 'file',
-            'path'      => __DIR__ . '/../data',
-            'format'    => 'csv',                // Codec für die Dateien
-            'delimiter' => ';',
+        'archiv' => [
+            'treiber'   => 'mongo',
+            'uri'       => getenv('MONGO_URI'),
+            'datenbank' => 'fahrzeugarchiv',
         ],
     ],
 
-    // ── Ressourcen ──────────────────────────────────────────────────────
-    'resources' => [
+    'anmeldung' => [
+        'verbindung'     => 'konten',
+        'tabelle'        => 'benutzer',
+        'loginSpalten'   => ['useremail', 'username'],   // anmelden mit E-Mail oder Name
+        'passwortSpalte' => 'password',
+        'rollenSpalte'   => 'rolle',
+        'verfahren'      => ['basic', 'token'],
+        'tokenSecret'    => getenv('TOKEN_SECRET'),      // Pflicht bei 'token', min. 32 Zeichen
+        'tokenGueltigkeit' => 8 * 3600,                  // Sekunden
+        'maxFehlversuche'  => 5,                         // pro IP und Minute
+    ],
 
-        'users' => [
-            'connection' => 'main',
-            'source'     => 'user_data',          // Tabelle / Collection / Dateiname
-            'primaryKey' => 'id',                 // API-Feldname des Schlüssels
-            'fields' => [
-                'id'       => ['column' => 'UserID',   'type' => 'int',    'readonly' => true],
-                'username' => ['column' => 'Username', 'type' => 'string', 'required' => true, 'max' => 50],
-                'vorname'  => ['column' => 'Vorname',  'type' => 'string', 'aliases' => ['firstname', 'first_name']],
-                'nachname' => ['column' => 'Nachname', 'type' => 'string', 'aliases' => ['lastname', 'last_name']],
-                'passwort' => ['column' => 'Userpw',   'type' => 'password', 'writeonly' => true],
-            ],
-            'filterable' => ['username', 'vorname', 'nachname'],
-            'sortable'   => ['id', 'username', 'nachname'],
-            'owner'      => 'id',                 // Feld, das mit dem user-Claim verglichen wird (:own)
-            'access' => [
-                'admin'      => 'crud',
-                'ausbilder'  => 'r',
-                'teilnehmer' => 'ru:own',
-            ],
-            'minLevel' => ['create' => 3, 'delete' => 3],
+    'rollen' => [
+        'nutzer' => 'r',
+        'admin'  => 'crud',
+    ],
+
+    'ressourcen' => [
+        // Felder kommen automatisch aus der Datenbank
+        'fahrzeuge'     => ['verbindung' => 'fahrzeuge', 'quelle' => 'fahrzeuge'],
+        'fahrzeugtypen' => ['verbindung' => 'fahrzeuge', 'quelle' => 'fahrzeugtypen'],
+        'fahrzeugarten' => ['verbindung' => 'fahrzeuge', 'quelle' => 'fahrzeugarten'],
+        'treibstoffe'   => ['verbindung' => 'fahrzeuge', 'quelle' => 'treibstoffe'],
+
+        // Ausnahmen nur, wo nötig
+        'fahrzeughalter' => [
+            'verbindung' => 'fahrzeuge',
+            'quelle'     => 'fahrzeughalter',
+            'felder'     => ['Strasse' => ['versteckt' => true]],
+            'rechte'     => ['nutzer' => '', 'admin' => 'crud'],
         ],
 
-        'schluessel' => [
-            'connection' => 'main',
-            'source'     => 'schluessel',
-            'primaryKey' => 'id',
-            'fields' => [
-                'id'          => ['column' => 'Schluessel_ID', 'type' => 'int', 'readonly' => true],
-                'nummer'      => ['column' => 'SchluesselNr',  'type' => 'string', 'required' => true,
-                                  'aliases' => ['schluesselnr', 'schlüsselnr']],
-                'schrank'     => ['column' => 'SchrankNr',     'type' => 'string', 'aliases' => ['schranknr']],
-                'besitzer_id' => ['column' => 'Nutzer_ID',     'type' => 'int',    'nullable' => true],
-                'ausgegeben'  => ['column' => 'Ausgabedatum',  'type' => 'datetime', 'nullable' => true],
+        // MongoDB hat kein Schema → Felder vollständig angeben
+        'wartungen' => [
+            'verbindung' => 'archiv',
+            'quelle'     => 'wartungen',
+            'felder' => [
+                'id'      => ['spalte' => '_id', 'typ' => 'string', 'nurLesen' => true, 'pk' => true],
+                'FID'     => ['typ' => 'int', 'pflicht' => true],
+                'datum'   => ['typ' => 'datetime', 'pflicht' => true],
+                'notiz'   => ['typ' => 'string'],
             ],
-            'filterable' => ['nummer', 'schrank', 'besitzer_id'],
-            'sortable'   => ['nummer', 'schrank'],
-            'access' => [
-                'admin'     => 'crud',
-                'ausbilder' => 'cru',
-            ],
-        ],
-
-        'zugriffslog' => [
-            'connection' => 'logs',
-            'source'     => 'access_log',
-            'primaryKey' => 'id',
-            'fields' => [
-                'id'        => ['column' => '_id',       'type' => 'string', 'readonly' => true],
-                'benutzer'  => ['column' => 'user',      'type' => 'string'],
-                'aktion'    => ['column' => 'action',    'type' => 'string'],
-                'zeitpunkt' => ['column' => 'timestamp', 'type' => 'datetime'],
-            ],
-            'access' => ['admin' => 'r'],
-        ],
-
-        // Reine Formatumwandlung ohne Speicher
-        '_convert' => [
-            'access' => ['admin' => 'r', 'ausbilder' => 'r'],
+            'verweise' => ['FID' => 'fahrzeuge'],   // Verweis über Backend-Grenzen
+            'rechte'   => ['nutzer' => 'r', 'admin' => 'crud'],
         ],
     ],
 ];
 ```
 
+```dotenv
+# config/.env – NICHT ins Git
+DB_USER=api
+DB_PASS=...
+AUTH_USER=api_anmeldung
+AUTH_PASS=...
+TOKEN_SECRET=ein-langer-zufaelliger-wert-mindestens-32-zeichen
+MONGO_URI=mongodb://127.0.0.1:27017
+API_DEBUG=0
+```
+
+> Die Spalten `Strasse` und die Ressource `wartungen` sind Beispiele für die Möglichkeiten der Config, nicht Teil der heutigen Datenbank.
+
 ### Ressourcen-Optionen
 
-| Option | Pflicht | Beschreibung |
+| Option | Pflicht | Bedeutung |
 |---|---|---|
-| `connection` | ja | Name einer Verbindung aus `connections` |
-| `source` | ja | Tabelle, Collection oder Dateiname im Backend |
-| `primaryKey` | ja | API-Feldname des eindeutigen Schlüssels |
-| `fields` | ja | Feld-Mapping (siehe unten) |
-| `access` | ja | Rechte pro Rolle. **Ohne `access` ist die Ressource gesperrt.** |
-| `filterable` | nein | Felder, nach denen gefiltert werden darf. Standard: keine. |
-| `sortable` | nein | Felder, nach denen sortiert werden darf. Standard: nur `primaryKey`. |
-| `owner` | bei `:own` | Feld, das den Besitzer eines Datensatzes enthält |
-| `minLevel` | nein | Mindest-Berechtigungsstufe pro Aktion |
+| `verbindung` | ja | Name aus `verbindungen` |
+| `quelle` | ja | Tabelle, Collection oder Dateiname |
+| `felder` | bei MongoDB | Ausnahmen bzw. vollständige Feldliste (siehe unten) |
+| `rechte` | nein | Override der globalen `rollen` |
+| `verweise` | nein | `Feld => Ressource`, für Verweise ohne Fremdschlüssel |
+| `filterbar` | nein | nur diese Felder als Filter erlauben (Standard: alle sichtbaren) |
+| `sortierbar` | nein | nur diese Felder zum Sortieren erlauben (Standard: alle sichtbaren) |
 
 ### Feld-Optionen
 
-| Option | Typ | Beschreibung |
-|---|---|---|
-| `column` | string | Name der Spalte bzw. des Dokumentfelds im Backend |
-| `type` | string | `int`, `float`, `decimal`, `string`, `bool`, `datetime`, `password` |
-| `required` | bool | Muss beim Anlegen (`POST`) vorhanden sein |
-| `nullable` | bool | Darf `null` sein (Standard: `false`) |
-| `readonly` | bool | Wird ausgegeben, kann aber nicht geschrieben werden (z. B. Auto-ID) |
-| `writeonly` | bool | Kann geschrieben werden, wird aber **nie** ausgegeben |
-| `max` | int | Maximale Länge (Strings) bzw. Maximalwert (Zahlen) |
-| `min` | int | Minimale Länge bzw. Minimalwert |
-| `aliases` | string[] | Alternative Feldnamen bei der Eingabe |
+Bei SQL-Tabellen werden alle Felder automatisch erkannt. Hier wird nur eingetragen, was davon **abweicht**:
 
-**Aliase** werden normalisiert verglichen: Groß-/Kleinschreibung, Leerzeichen und Umlaute spielen keine Rolle (`"Schlüssel Nr"` → `schluesselnr`). Das ist besonders für CSV-Importe aus Excel praktisch, deren Spaltenüberschriften oft unterschiedlich geschrieben sind.
+| Option | Bedeutung |
+|---|---|
+| `versteckt` | Feld wird weder ausgegeben noch angenommen |
+| `nurLesen` | wird ausgegeben, kann aber nicht geschrieben werden |
+| `nurSchreiben` | kann geschrieben werden, wird **nie** ausgegeben (z. B. Passwörter) |
+| `name` | anderer Name in der API (`'Fahrzeug_Name' => ['name' => 'name']`) |
+| `aliase` | weitere erlaubte Eingabenamen, z. B. für CSV-Kopfzeilen aus Excel |
+| `spalte` | echter Spaltenname, wenn er vom API-Namen abweicht (MongoDB: `_id`) |
+| `typ` | `int`, `float`, `decimal`, `string`, `bool`, `datetime`, `passwort` |
+| `pflicht`, `pk`, `min`, `max` | Prüfregeln, bei SQL automatisch aus der Datenbank |
 
-**`type: password`** wird beim Schreiben automatisch mit `password_hash()` gehasht und ist implizit `writeonly`.
+### Prüfung beim Start
 
-### Validierung beim Start
+Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 
-Beim Laden der Konfiguration wird geprüft:
+- Jede Ressource verweist auf eine existierende Verbindung, deren Treiber installiert ist.
+- Jede Rechte-Angabe besteht nur aus `c`, `r`, `u`, `d`.
+- Verweise zeigen auf existierende Ressourcen.
+- Ist `token` als Verfahren aktiv, muss `tokenSecret` gesetzt und mindestens 32 Zeichen lang sein. **Es gibt keinen Standardwert.**
 
-- Jede Ressource verweist auf eine existierende Verbindung.
-- Der Treiber jeder Verbindung ist verfügbar (Abhängigkeit installiert).
-- Jede Ressource hat `primaryKey`, `fields` und `access`.
-- `primaryKey`, `filterable`, `sortable` und `owner` verweisen auf existierende Felder.
-- Jede `access`-Regel ist gültig (nur `c`, `r`, `u`, `d`, optional `:own`).
-- Ressourcen mit `:own` haben ein `owner`-Feld.
-- `auth.secret` ist gesetzt und mindestens 32 Zeichen lang.
-
-Schlägt eine Prüfung fehl, antwortet das Gateway auf jeden Request mit `500` und schreibt den genauen Grund ins Log. Manuell prüfen lässt sich das mit:
-
-```bash
-php bin/check-config.php
-```
-
----
-
-## Authentifizierung und Rollen
-
-### Token
-
-Jeder Request (außer bei explizit öffentlichen Ressourcen) braucht ein signiertes Token (JWT, HS256):
-
-```http
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-Alternativ wird das Cookie aus `auth.cookie` gelesen, damit ein Browser-Frontend mit HttpOnly-Cookie arbeiten kann. Das Gateway ist **zustandslos**: keine PHP-Session, alle Informationen stehen im Token.
-
-Erwartete Claims (Namen über `auth.claims` anpassbar):
-
-```json
-{
-  "sub": "42",
-  "role": "ausbilder",
-  "level": 2,
-  "exp": 1764000000
-}
-```
-
-### Rechte-Schreibweise
-
-Pro Ressource wird jeder Rolle eine Zeichenkette aus CRUD-Buchstaben zugewiesen:
-
-| Buchstabe | Aktion | HTTP-Methode |
-|---|---|---|
-| `c` | create (anlegen) | `POST` |
-| `r` | read (lesen) | `GET` |
-| `u` | update (ändern) | `PUT`, `PATCH` |
-| `d` | delete (löschen) | `DELETE` |
-
-```php
-'access' => [
-    'admin'      => 'crud',     // alles
-    'ausbilder'  => 'cru',      // alles außer löschen
-    'teilnehmer' => 'r:own',    // nur eigene Datensätze lesen
-    '*'          => 'r',        // jede angemeldete Rolle darf lesen
-],
-```
-
-- **`:own`** beschränkt die Rechte auf Datensätze, bei denen das `owner`-Feld dem `user`-Claim aus dem Token entspricht. Das Gateway hängt diesen Filter automatisch an jede Abfrage. Ein Teilnehmer kann ihn nicht umgehen, auch nicht über `?filter`.
-- **`*`** gilt für jede angemeldete Rolle, die nicht explizit aufgeführt ist.
-- **Nicht aufgeführte Rollen** haben keine Rechte (deny by default).
-
-### Berechtigungsstufen
-
-Zusätzlich zur Rolle kann pro Aktion eine Mindeststufe verlangt werden:
-
-```php
-'minLevel' => ['create' => 3, 'delete' => 3],
-```
-
-Ein Zugriff ist nur erlaubt, wenn **die Rolle die Aktion erlaubt UND** die Stufe aus dem Token mindestens `minLevel` erreicht.
-
-### Ablauf der Prüfung
-
-```
-Kein / ungültiges / abgelaufenes Token   → 401 Unauthorized
-Rolle hat Aktion nicht                   → 403 Forbidden
-Stufe zu niedrig                         → 403 Forbidden
-:own und fremder Datensatz (Einzelzugriff) → 404 Not Found
-```
-
-Bei `:own` antwortet ein Einzelzugriff auf einen fremden Datensatz mit `404` statt `403`. So lässt sich nicht herausfinden, welche IDs existieren.
-
----
-
-## API-Referenz
-
-### Endpunkte
-
-| Methode | Pfad | Aktion | Recht |
-|---|---|---|---|
-| `GET` | `/api/{ressource}` | Liste (gefiltert, sortiert, seitenweise) | `r` |
-| `GET` | `/api/{ressource}/{id}` | Einzelner Datensatz | `r` |
-| `POST` | `/api/{ressource}` | Einen oder mehrere Datensätze anlegen | `c` |
-| `PUT` | `/api/{ressource}/{id}` | Datensatz vollständig ersetzen | `u` |
-| `PATCH` | `/api/{ressource}/{id}` | Einzelne Felder ändern | `u` |
-| `DELETE` | `/api/{ressource}/{id}` | Datensatz löschen | `d` |
-| `GET` | `/api/_meta` | Ressourcen, Formate, eigene Rechte | angemeldet |
-| `POST` | `/api/_convert` | Format umwandeln, ohne zu speichern | laut Config |
-
-### Query-Parameter für Listen
-
-| Parameter | Beispiel | Beschreibung |
-|---|---|---|
-| `filter[feld]` | `filter[schrank]=A12` | Gleichheit |
-| `filter[feld][op]` | `filter[nachname][like]=Mül%` | Mit Operator |
-| `sort` | `sort=-nachname,vorname` | Sortierung, `-` = absteigend |
-| `limit` | `limit=100` | Seitengröße (max. `limits.maxLimit`) |
-| `offset` | `offset=200` | Startposition |
-| `fields` | `fields=id,username` | Nur diese Felder ausgeben |
-| `format` | `format=csv` | Ausgabeformat, Alternative zum `Accept`-Header |
-
-**Filter-Operatoren**
-
-| Operator | Bedeutung | Beispiel |
-|---|---|---|
-| `eq` | gleich (Standard) | `filter[id][eq]=5` |
-| `ne` | ungleich | `filter[schrank][ne]=A12` |
-| `lt` / `gt` | kleiner / größer | `filter[id][gt]=100` |
-| `lte` / `gte` | kleiner gleich / größer gleich | `filter[ausgegeben][gte]=2026-01-01` |
-| `like` | Muster mit `%` | `filter[nachname][like]=Mül%` |
-| `in` | in Liste | `filter[id][in]=1,2,3` |
-| `null` | ist (nicht) leer | `filter[besitzer_id][null]=true` |
-
-Gefiltert und sortiert werden darf **nur** nach Feldern aus `filterable` bzw. `sortable`. Unbekannte Felder führen zu `400`.
-
-### Pagination
-
-Weil manche Formate (z. B. CSV) keine Metadaten im Body tragen können, steht die Seiteninformation in den Response-Headern:
-
-```http
-X-Total-Count: 1342
-Link: </api/users?limit=50&offset=50>; rel="next", </api/users?limit=50&offset=1300>; rel="last"
-```
-
-### Beispiele
-
-**Liste als JSON**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-     "https://example.org/api/users?filter[nachname][like]=M%25&sort=nachname&limit=2"
-```
-
-```json
-[
-  { "id": 7,  "username": "mmueller", "vorname": "Max",  "nachname": "Müller" },
-  { "id": 12, "username": "lmeier",   "vorname": "Lena", "nachname": "Meier" }
-]
-```
-
-**Dieselbe Liste als CSV**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-     -H "Accept: text/csv" \
-     "https://example.org/api/users?filter[nachname][like]=M%25&sort=nachname&limit=2"
-```
-
-```csv
-id;username;vorname;nachname
-7;mmueller;Max;Müller
-12;lmeier;Lena;Meier
-```
-
-**Mehrere Datensätze per CSV anlegen, Antwort als XML**
-
-```bash
-curl -X POST \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: text/csv" \
-     -H "Accept: application/xml" \
-     --data-binary @neue_schluessel.csv \
-     "https://example.org/api/schluessel"
-```
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<records>
-  <record><id>301</id><nummer>K-0815</nummer><schrank>A12</schrank><besitzer_id/><ausgegeben/></record>
-  <record><id>302</id><nummer>K-0816</nummer><schrank>A12</schrank><besitzer_id/><ausgegeben/></record>
-</records>
-```
-
-**Einzelnes Feld ändern**
-
-```bash
-curl -X PATCH \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"besitzer_id": 7, "ausgegeben": "2026-11-23T10:00:00+01:00"}' \
-     "https://example.org/api/schluessel/301"
-```
-
-**Format umwandeln ohne Speichern**
-
-```bash
-curl -X POST \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: text/csv" \
-     -H "Accept: application/x-yaml" \
-     --data-binary @export.csv \
-     "https://example.org/api/_convert"
-```
-
-**Selbstauskunft**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" "https://example.org/api/_meta"
-```
-
-```json
-{
-  "formats": {
-    "input":  ["application/json", "text/csv", "text/tab-separated-values", "application/xml", "application/x-yaml"],
-    "output": ["application/json", "text/csv", "text/tab-separated-values", "application/xml", "application/x-yaml", "application/sql"]
-  },
-  "resources": {
-    "users":      { "access": "r",   "fields": ["id", "username", "vorname", "nachname"] },
-    "schluessel": { "access": "cru", "fields": ["id", "nummer", "schrank", "besitzer_id", "ausgegeben"] }
-  }
-}
-```
-
-`_meta` zeigt nur Ressourcen, auf die die eigene Rolle mindestens ein Recht hat, und nur Felder, die ausgegeben werden. `writeonly`-Felder erscheinen nicht.
+Ist etwas falsch, antwortet die API mit `500` und schreibt den Grund ins Log. Manuell prüfen: `php bin/config-pruefen.php` 🔜.
 
 ---
 
 ## Formate (Codecs)
 
-| Format | MIME-Type | Kurz (`?format=`) | Eingabe | Ausgabe | Abhängigkeit |
-|---|---|---|---|---|---|
-| JSON | `application/json` | `json` | ✅ | ✅ | – |
-| CSV | `text/csv` | `csv` | ✅ | ✅ | – |
-| TSV | `text/tab-separated-values` | `tsv` | ✅ | ✅ | – |
-| XML | `application/xml` | `xml` | ✅ | ✅ | – |
-| YAML | `application/x-yaml` | `yaml` | ✅ | ✅ | `symfony/yaml` |
-| XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `xlsx` | ✅ | ✅ | `phpoffice/phpspreadsheet` |
-| SQL | `application/sql` | `sql` | ❌ | ✅ | – |
+Das Eingabeformat bestimmt der `Content-Type`, das Ausgabeformat der `Accept`-Header (oder `?format=`). Ohne Angabe wird JSON ausgegeben.
 
-Ohne `Accept`-Header (oder bei `*/*`) wird **JSON** ausgegeben.
+| Format | MIME-Type | Eingabe | Ausgabe | Abhängigkeit |
+|---|---|---|---|---|
+| JSON | `application/json` | ✅ | ✅ | – |
+| Formular | `application/x-www-form-urlencoded`, `multipart/form-data` | ✅ | – | – |
+| CSV | `text/csv` | 🔜 | 🔜 | – |
+| TSV | `text/tab-separated-values` | 🔜 | 🔜 | – |
+| XML | `application/xml` | 🔜 | 🔜 | – |
+| YAML | `application/x-yaml` | 🔜 | 🔜 | `symfony/yaml` |
+| XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | 🔜 | 🔜 | `phpoffice/phpspreadsheet` |
+| SQL | `application/sql` | ❌ nie | 🔜 | – |
 
-### JSON
-
-- Eingabe: ein einzelnes Objekt oder ein Array von Objekten.
-- Ausgabe: Liste → Array, Einzelzugriff → Objekt.
-- Kodierung: UTF-8, Umlaute unmaskiert (`JSON_UNESCAPED_UNICODE`).
-
-### CSV / TSV
-
-- Erste Zeile ist immer die Kopfzeile mit Feldnamen. Aliase werden aufgelöst.
-- **Eingabe**: Trennzeichen wird automatisch erkannt (`;`, `,`, Tab). Ein UTF-8-BOM am Anfang wird entfernt.
-- **Ausgabe**: Trennzeichen `;` und UTF-8-BOM, damit deutsches Excel die Datei ohne Import-Assistent korrekt öffnet. Mit `?delimiter=,` lässt sich das Trennzeichen ändern.
-- **Leere Zelle = `null`**. Ein leerer String ist in CSV deshalb nicht von `null` unterscheidbar.
-
-### XML
-
-Feste, einfache Struktur, nur Elemente, keine Attribute:
-
-```xml
-<records>
-  <record>
-    <feldname>wert</feldname>
-    <leeres_feld/>
-  </record>
-</records>
-```
-
-- Ein leeres Element (`<feld/>`) bedeutet `null`.
-- Bei Einzelzugriffen ist das Wurzelelement `<record>`.
-- Feldnamen müssen gültige XML-Elementnamen sein. Das prüft der Validator beim Start.
-- Externe Entities sind deaktiviert (Schutz vor XXE-Angriffen).
-
-### YAML
-
-Wie JSON: eine Liste von Mappings bzw. ein einzelnes Mapping. Anker, Aliase und Tags werden nicht unterstützt.
-
-### SQL (nur Ausgabe)
-
-Erzeugt `INSERT`-Statements für die abgefragten Zeilen, z. B. für Exporte oder Testdaten:
-
-```sql
-INSERT INTO `users` (`id`, `username`, `vorname`, `nachname`) VALUES (7, 'mmueller', 'Max', 'Müller');
-```
-
-SQL wird **niemals als Eingabe** angenommen. Vom Client gelieferte SQL-Befehle auszuführen wäre eine offene Tür für Angriffe.
-
-### Obj (PHP-Objekte)
-
-Kein Übertragungsformat, sondern ein `Hydrator` für eigenen PHP-Code, der das Gateway intern nutzt:
+Jeder Codec setzt dieselbe Schnittstelle um:
 
 ```php
-$users = $gateway->resource('users')->find($query);           // neutrale Zeilen
-$objs  = Hydrator::toObjects($users, App\Model\User::class);  // → User[]
+interface Codec
+{
+    public function mimeTypes(): array;
+    public function decode(string $body): array;   // → Liste von Zeilen
+    public function encode(array $rows): string;
+}
 ```
 
-Die Zuordnung Ressource ↔ Klasse kann optional in der Ressource stehen: `'class' => App\Model\User::class`.
+Hinweise zu den Formaten:
+
+- **JSON**: heute ein einzelnes Objekt. 🔜 Künftig auch eine Liste von Objekten, die in einer Transaktion angelegt wird (alle oder keiner).
+- **Formular**: wie heute. Steuerfelder (`_method`, `_email` …) werden entfernt, bevor gespeichert wird.
+- **CSV**: Kopfzeile = Feldnamen. Bei der Eingabe wird das Trennzeichen erkannt (`;`, `,`, Tab) und ein BOM entfernt. Die Ausgabe nutzt `;` mit BOM, damit deutsches Excel die Datei direkt öffnet. **Eine leere Zelle bedeutet `NULL`.**
+- **XML**: `<datensaetze><datensatz><Feld>Wert</Feld></datensatz></datensaetze>`, nur Elemente, keine Attribute. Ein leeres Element bedeutet `NULL`, externe Entities sind abgeschaltet.
+- **SQL**: nur als Ausgabe (`INSERT`-Statements für Export oder Testdaten). SQL wird **nie** als Eingabe angenommen.
+
+### Objekte („Obj“)
+
+Statt einer handgeschriebenen Klasse pro Tabelle (wie `api_outerlayer/fahrzeug.php`) gibt es zwei Wege:
+
+- **Generisch**: eine Klasse `Record` für jede Ressource: `$fahrzeug->get('Marke')`.
+- **Generiert** 🔜: `php bin/klassen-erzeugen.php` erzeugt aus dem Schema typisierte Klassen (`Fahrzeug`, `Fahrzeugtyp` …) mit Autovervollständigung in der IDE. Ändert sich eine Tabelle, wird einfach neu erzeugt.
 
 ---
 
-## Datenmodell
+## Datenmodell und Verweise
 
-### Der neutrale Datensatz
+### Nur flache Datensätze
 
-Alle Bausteine tauschen Daten in genau dieser Form aus:
-
-```php
-// Liste von Zeilen
-[
-    ['id' => 7,  'username' => 'mmueller', 'aktiv' => true,  'besitzer_id' => null],
-    ['id' => 12, 'username' => 'lmeier',    'aktiv' => false, 'besitzer_id' => 3],
-]
-```
-
-Erlaubt sind nur die Werttypen `int`, `float`, `string`, `bool` und `null`. **Keine Arrays oder Objekte als Feldwert.**
-
-### Typsystem
-
-| Typ | PHP | MariaDB | MongoDB | Ausgabe JSON | Ausgabe CSV/XML |
-|---|---|---|---|---|---|
-| `int` | `int` | INT, BIGINT | int32/int64 | `42` | `42` |
-| `float` | `float` | DOUBLE | double | `3.14` | `3.14` |
-| `decimal` | `string` | DECIMAL | Decimal128 | `"12.50"` | `12.50` |
-| `string` | `string` | VARCHAR, TEXT | string | `"Text"` | `Text` |
-| `bool` | `bool` | TINYINT(1) | bool | `true` | `1` / `0` |
-| `datetime` | `string` (ISO 8601) | DATETIME | Date | `"2026-11-23T10:00:00+01:00"` | wie JSON |
-| `password` | – | VARCHAR(255) | string | nie ausgegeben | nie ausgegeben |
-
-`decimal` wird bewusst als String geführt. Als `float` entstehen bei Geldbeträgen Rundungsfehler.
-
-### Typumwandlung bei der Eingabe
-
-Aus textbasierten Formaten (CSV, XML) kommen alle Werte als String. Der `TypeCaster` wandelt sie anhand des Mappings um:
-
-| Eingabe | Typ | Ergebnis |
-|---|---|---|
-| `"42"` | `int` | `42` |
-| `"4,2"` | `float` | `4.2` (deutsches Dezimalkomma wird akzeptiert) |
-| `"abc"` | `int` | **Fehler** → Status `422` |
-| `"1"`, `"true"`, `"ja"` | `bool` | `true` |
-| `"0"`, `"false"`, `"nein"` | `bool` | `false` |
-| `"23.11.2026"` | `datetime` | `"2026-11-23T00:00:00+01:00"` |
-| `""` | jeder | `null` (wenn `nullable`, sonst Fehler) |
-
-Nicht umwandelbare Werte führen zu `422` mit Angabe von Zeile und Feld. Es wird nicht stillschweigend geraten.
-
-### Beziehungen
-
-Beziehungen werden **nur als ID** abgebildet:
+Ein Datensatz ist ein einfaches Schlüssel-Wert-Array. Erlaubt sind nur `int`, `float`, `string`, `bool` und `null`. Listen oder Objekte als Feldwert werden abgelehnt:
 
 ```json
-{ "id": 301, "nummer": "K-0815", "besitzer_id": 7 }
+{ "fehler": "Ungültige Eingaben.", "details": ["Feld \"Ausstattung\" muss ein einzelner Wert sein, keine Liste."] }
 ```
 
-Den Besitzer liefert ein zweiter Request: `GET /api/users/7`. Joins, eingebettete Objekte oder `?include=` gibt es nicht.
+### Typen
 
-### Verschachtelte Eingaben
+| Typ | MariaDB | MongoDB | JSON-Ausgabe | CSV / XML |
+|---|---|---|---|---|
+| `int` | INT, BIGINT | int32/int64 | `42` | `42` |
+| `float` | DOUBLE, FLOAT | double | `3.5` | `3.5` |
+| `decimal` | DECIMAL | Decimal128 | `"12.50"` (String, keine Rundungsfehler) | `12.50` |
+| `string` | VARCHAR, TEXT | string | `"Golf"` | `Golf` |
+| `bool` | TINYINT(1) | bool | `1` / `0` | `1` / `0` |
+| `datetime` | DATE, DATETIME | Date | `"2026-11-23 10:00:00"` | wie JSON |
 
-Enthält ein Feld ein Objekt oder eine Liste, wird der gesamte Request abgelehnt:
+Bei der Eingabe wird `true`/`false` zu `1`/`0`, ein leeres Feld zu `NULL` (wenn die Spalte das erlaubt), und Texte werden getrimmt. 🔜 Aus CSV und Formularen wird außerdem das deutsche Dezimalkomma akzeptiert (`"4,2"` → `4.2`).
 
-```json
-{
-  "error": "validation_failed",
-  "message": "Eingabe enthält ungültige Werte.",
-  "details": [
-    { "row": 1, "field": "adresse", "problem": "Verschachtelte Werte werden nicht unterstützt." }
-  ]
-}
-```
+### Verweise
+
+Beziehungen werden nur als **ID** abgebildet: Ein Fahrzeug hat `"FTID": 3`, nicht das ganze Fahrzeugtyp-Objekt. Wer den Typ braucht, fragt `GET api.php/fahrzeugtypen/3`.
+
+Verweise werden auf drei Wegen erkannt:
+
+1. **Echte Fremdschlüssel** in der Datenbank (`INFORMATION_SCHEMA`).
+2. **Namensregel**: Eine Spalte, die so heißt wie der Primärschlüssel einer anderen Tabelle, verweist auf diese (`fahrzeuge.FTID → fahrzeugtypen.FTID`). Heißen zwei Primärschlüssel gleich (z. B. beide `id`), gilt die Regel für sie nicht.
+3. 🔜 **Config** (`'verweise' => ['FID' => 'fahrzeuge']`): für Backends ohne Fremdschlüssel und für Verweise **über Backend-Grenzen hinweg**, z. B. MongoDB → MariaDB.
+
+Die API prüft dabei selbst:
+
+- **Beim Speichern**, ob es den Eintrag gibt, auf den verwiesen wird. Sonst `400`.
+- **Beim Löschen**, ob der Datensatz noch verwendet wird. Sonst `409` mit Ressource, Spalte und Anzahl.
+
+🔜 Die Prüfung läuft künftig über den Treiber der Zielressource statt direkt per SQL. Dadurch funktioniert sie für jedes Backend.
 
 ---
 
 ## Speicher-Backends (Treiber)
 
-Alle Treiber implementieren dasselbe Interface:
+Jeder Treiber setzt dieselbe Schnittstelle um:
 
 ```php
 interface Driver
 {
-    /** @return array{rows: list<array>, total: int} */
-    public function find(Query $query): array;
-
-    public function get(string|int $id): ?array;
-
-    /** @return array Gespeicherte Zeile inkl. erzeugter ID */
-    public function create(array $row): array;
-
-    public function update(string|int $id, array $row): ?array;
-
-    public function delete(string|int $id): bool;
+    public function schema(): array;                         // Felder, Typen, PK, Verweise
+    public function find(Query $query): array;               // ['daten' => [...], 'gesamt' => n]
+    public function get(string $id): ?array;
+    public function create(array $row): array;               // gespeicherter Datensatz inkl. ID
+    public function update(string $id, array $row): array;
+    public function delete(string $id): bool;
+    public function count(array $filter): int;               // für die Verweis-Prüfung
 }
 ```
 
-Der Treiber bekommt bereits gemappte Daten (Spaltennamen des Backends) und eine geprüfte `Query`. Er kennt weder Formate noch Rechte.
+### PdoDriver: MariaDB, MySQL (✅ heute in `api.php`), PostgreSQL, SQLite (🔜)
 
-### PdoDriver (MariaDB, MySQL, PostgreSQL, SQLite)
+- Werte immer über Prepared Statements, `ATTR_EMULATE_PREPARES` ist aus.
+- Tabellen- und Spaltennamen kommen **nur** aus der Config bzw. dem Schema und werden zusätzlich in Backticks gesetzt.
+- Bei Zahlen-Primärschlüsseln werden nur Ziffern als ID angenommen (MySQL würde `5abc` sonst als `5` lesen).
+- Ohne `sort` wird nach dem Primärschlüssel sortiert, damit `limit`/`offset` stabil bleiben.
+- Datenbankfehler werden übersetzt (siehe [Fehler](#fehler)).
+- 🔜 **Das Schema wird gecacht.** Heute laufen bei jedem Request `SHOW COLUMNS` und die `INFORMATION_SCHEMA`-Abfragen, beim Löschen sogar für alle Tabellen. Künftig wird das Schema einmal in `cache/schema.php` geschrieben und von OPcache gehalten. Neu erzeugt wird über `php bin/schema-aktualisieren.php` oder automatisch nach einer einstellbaren Zeit.
 
-```php
-'main' => [
-    'driver' => 'pdo',
-    'dsn'    => 'mysql:host=mysql;dbname=app;charset=utf8mb4',
-    'user'   => getenv('DB_MAIN_USER'),
-    'pass'   => getenv('DB_MAIN_PASS'),
-],
-```
+### 🔜 MongoDriver
 
-- Alle **Werte** über Prepared Statements.
-- Alle **Tabellen- und Spaltennamen** stammen ausschließlich aus der Konfiguration und werden zusätzlich gequotet. Spaltennamen aus dem Request werden nie direkt ins SQL übernommen.
-- `POST` mit mehreren Zeilen läuft in einer Transaktion: entweder werden alle Zeilen gespeichert oder keine.
-- Empfohlen: eigener Datenbank-Benutzer für das Gateway mit nur `SELECT`, `INSERT`, `UPDATE`, `DELETE` auf die benötigten Tabellen, **nicht** `root`.
+- Filter werden übersetzt: `gt` → `$gt`, `*` → `$regex` (mit maskierten Sonderzeichen), `in` → `$in`.
+- `_id` wird über `'spalte' => '_id'` auf ein API-Feld abgebildet, ObjectIds werden als String ausgegeben.
+- Nur Felder der obersten Ebene. Verschachtelte Felder in vorhandenen Dokumenten werden ignoriert.
+- Fehler 11000 (doppelter Schlüssel) → `409`.
+- Benötigt die PHP-Extension `mongodb` und das Paket `mongodb/mongodb`.
 
-### MongoDriver
+### 🔜 FileDriver (CSV, XML, JSON als Speicher)
 
-```php
-'logs' => [
-    'driver'   => 'mongo',
-    'uri'      => getenv('MONGO_URI'),
-    'database' => 'logs',
-],
-```
-
-- Die `Query` wird in Mongo-Filter übersetzt (`gt` → `$gt`, `like` → `$regex` mit maskierten Sonderzeichen, `in` → `$in`).
-- `_id` wird über das Mapping auf ein API-Feld (meist `id`) abgebildet. ObjectIds werden als String ausgegeben.
-- Nur Felder der obersten Ebene. Verschachtelte Felder in bestehenden Dokumenten werden beim Lesen ignoriert.
-- Benötigt `ext-mongodb` und `mongodb/mongodb`.
-
-### FileDriver (CSV, XML, JSON, YAML als Speicher)
-
-```php
-'files' => [
-    'driver'    => 'file',
-    'path'      => __DIR__ . '/../data',
-    'format'    => 'csv',
-    'delimiter' => ';',
-],
-```
-
-- Jede Ressource ist eine Datei: `{path}/{source}.{format}`.
-- Lesen und Schreiben über denselben Codec wie die HTTP-Schicht.
-- Filtern, Sortieren und Paginieren passiert in PHP.
-- **Schreiben ist atomar**: Datei mit `flock()` sperren, Inhalt in eine Temp-Datei schreiben, per `rename()` ersetzen. Stürzt der Prozess mittendrin ab, bleibt die alte Datei vollständig erhalten.
-- IDs werden als fortlaufende Zahl vergeben (höchste vorhandene ID + 1).
-- Geeignet für kleine Datenmengen und Konfigurationsdaten, **nicht** für viele gleichzeitige Schreibzugriffe.
+- Eine Datei pro Ressource, gelesen und geschrieben über dieselben Codecs wie die HTTP-Schicht.
+- **Atomares Schreiben**: Datei mit `flock()` sperren, in eine Temp-Datei schreiben, per `rename()` ersetzen.
+- Gut für kleine Datenmengen (bis einige tausend Zeilen), nicht für viele gleichzeitige Schreibzugriffe.
 
 ### Backend wechseln
 
-1. Neue Verbindung in `connections` anlegen.
-2. Bei der Ressource `connection` und ggf. `column`-Namen anpassen.
-3. Daten umziehen (geplant: `php bin/migrate.php users --from=main --to=logs`).
-4. `php bin/check-config.php` ausführen.
+1. Neue Verbindung in `verbindungen` eintragen.
+2. Bei der Ressource `verbindung` ändern (bei MongoDB zusätzlich `felder`).
+3. Daten umziehen (🔜 `php bin/umziehen.php fahrzeuge --nach=archiv`).
 
-Für Clients ändert sich dabei nichts: Endpunkte, Feldnamen und Formate bleiben gleich.
+Für Clients ändert sich nichts: gleiche URLs, gleiche Feldnamen, gleiche Formate.
 
 ---
 
-## Fehlerbehandlung
+## API-Dokumentation (Swagger)
 
-Fehler kommen immer im angefragten Ausgabeformat, bei JSON z. B.:
+**Heute** beschreibt `openapi.yaml` jeden Pfad von Hand (`/fahrzeuge/{FID}`, `/fahrzeugtypen/{FTID}` …). `docs.html` zeigt sie mit Swagger UI an. Kommt eine Spalte oder Tabelle dazu, muss die Datei mitgepflegt werden, sonst stimmt die Doku nicht mehr.
 
-```json
-{
-  "error": "forbidden",
-  "message": "Keine Berechtigung für diese Aktion.",
-  "requestId": "a3f9c2e1"
-}
+**🔜 Künftig** erzeugt die API die Beschreibung selbst aus Schema und Config:
+
+```
+GET api.php/_openapi   → OpenAPI 3 als JSON
 ```
 
-Bei CSV-Ausgabe werden Fehler als JSON geliefert, weil CSV keine sinnvolle Fehlerstruktur abbilden kann.
-
-| Status | `error` | Wann |
-|---|---|---|
-| `400` | `bad_request` | Ungültige Query-Parameter, unbekanntes Filterfeld, kaputter Body |
-| `401` | `unauthorized` | Kein, ungültiges oder abgelaufenes Token |
-| `403` | `forbidden` | Rolle oder Stufe reicht nicht |
-| `404` | `not_found` | Ressource oder Datensatz existiert nicht (oder ist bei `:own` fremd) |
-| `405` | `method_not_allowed` | z. B. `DELETE` auf `/api/users` ohne ID |
-| `406` | `not_acceptable` | Gewünschtes Ausgabeformat nicht verfügbar |
-| `409` | `conflict` | Eindeutiger Schlüssel verletzt (z. B. Username doppelt) |
-| `413` | `payload_too_large` | Body größer als `limits.maxBodyBytes` |
-| `415` | `unsupported_media_type` | Eingabeformat nicht verfügbar |
-| `422` | `validation_failed` | Pflichtfeld fehlt, falscher Typ, verschachtelter Wert |
-| `500` | `internal_error` | Unerwarteter Fehler oder ungültige Konfiguration |
-
-**Interne Details werden nie an den Client geschickt.** Exception-Meldungen, SQL-Fehler und Stacktraces landen nur im Server-Log, verknüpft über die `requestId`.
+- `docs.html` lädt diese URL statt der statischen Datei.
+- Die erklärenden Texte aus der heutigen `openapi.yaml` (Anmeldung, Rollen, URL-Aufbau) bleiben als Vorlage erhalten. Nur Pfade, Felder und Typen werden generiert.
+- Jeder sieht nur die Ressourcen und Methoden, die seine Rolle darf.
 
 ---
 
-## Grenzen und Performance
+## Architektur und Umbau
 
-Weil alle Daten als Array im Speicher liegen, sind die Grenzen Teil des Designs:
+Die bestehende `api.php` wird **nicht neu geschrieben**, sondern Schritt für Schritt in Klassen zerlegt, während sie weiterläuft. `client/index.php` und Swagger dienen dabei als Test, ob noch alles funktioniert. Am Ende ist `api.php` nur noch ein Einstiegspunkt, der den Kernel startet.
 
-| Grenze | Standard | Wirkung |
-|---|---|---|
-| `maxBodyBytes` | 5 MB | Größere Requests → `413`, bevor geparst wird |
-| `maxBodyBytesByFormat.xlsx` | 1 MB | Eigenes, kleineres Limit für XLSX-Uploads |
-| `defaultLimit` | 50 | Seitengröße ohne `?limit` |
-| `maxLimit` | 500 | `?limit` wird darauf gekappt |
-| `memory_limit` (php.ini) | ≥ 256 MB empfohlen | Puffer für Decoding + Mapping + Encoding |
+### Von der Funktion zur Klasse
 
-Weitere Punkte:
+| Heute in `api.php` | Wird zu |
+|---|---|
+| `antwort()`, `fehler()`, `exceptionBehandeln()` | `Http\Response`, `Http\ErrorHandler` |
+| Routing (Abschnitt 6b) | `Http\Router` |
+| Methode und Override (6c), `eingabeLesen()` | `Http\Request` |
+| `zugangsdaten()`, `anmelden()`, `authDb()` | `Auth\BasicAuthenticator` (+ `Auth\TokenAuthenticator` 🔜) |
+| `ROLLEN`, Prüfung in 6d | `Policy\AccessPolicy` |
+| `eingabeLesen()` (JSON/Formular) | `Codec\JsonCodec`, `Codec\FormCodec` |
+| `db()`, `spalten()`, `primaerschluessel()`, `primaerschluesselNamen()` | `Driver\PdoDriver::schema()` + `Schema\SchemaCache` |
+| `holen()`, `liste()`, `anlegen()`, `aendern()`, `loeschen()` | `Driver\PdoDriver::get/find/create/update/delete` |
+| `namenAngleichen()`, `spalteFinden()`, `felderPruefen()`, `ohneSteuerfelder()` | `Mapping\FieldMapper` |
+| Verweis-Prüfung, `verwendungPruefen()` | `Mapping\ReferenceChecker` |
+| `MYSQL_FEHLER` | Fehlerübersetzung im `PdoDriver` |
+| Übersicht (6e) | `Http\Controller\OverviewController` |
 
-- Die Konfiguration ist ein PHP-Array und wird von **OPcache** gecacht.
-- Datenbankverbindungen werden **lazy** aufgebaut: Ein Request an `/api/users` öffnet keine MongoDB-Verbindung.
-- Codecs mit externen Bibliotheken (YAML, XLSX) werden erst geladen, wenn sie gebraucht werden.
-- Filter, Sortierung und Limit werden bei PDO und MongoDB **an die Datenbank übergeben** und nicht erst in PHP ausgeführt.
-- Zwischenergebnisse werden **sofort freigegeben**, sobald der nächste Schritt fertig ist (z. B. `unset($body)` nach dem Dekodieren). So liegen die Daten nicht gleichzeitig drei- oder viermal im Speicher.
+### Ziel-Ordnerstruktur
+
+```
+MyEndPoint/
+├─ api.php                    ← Einstiegspunkt (bleibt, für alte URLs)
+├─ .htaccess
+├─ config/
+│   ├─ gateway.php
+│   ├─ .env                   ← nicht im Git
+│   └─ .env.example
+├─ bin/                       ← Kommandozeilen-Werkzeuge
+│   ├─ config-pruefen.php
+│   ├─ schema-aktualisieren.php
+│   ├─ klassen-erzeugen.php
+│   └─ umziehen.php
+├─ cache/                     ← erzeugtes Schema, nicht im Git
+├─ src/
+│   ├─ Http/                  ← Kernel, Router, Request, Response, ErrorHandler, Controller/
+│   ├─ Config/                ← ConfigLoader, ConfigValidator
+│   ├─ Auth/                  ← BasicAuthenticator, TokenAuthenticator, LoginThrottle, Principal
+│   ├─ Policy/                ← AccessPolicy
+│   ├─ Codec/                 ← Codec, CodecRegistry, JsonCodec, FormCodec, CsvCodec, XmlCodec, …
+│   ├─ Driver/                ← Driver, DriverFactory, PdoDriver, MongoDriver, FileDriver
+│   ├─ Schema/                ← SchemaCache
+│   ├─ Mapping/               ← FieldMapper, TypeCaster, ReferenceChecker, Record
+│   └─ Query/                 ← Query, QueryParser
+├─ client/index.php
+├─ docs.html
+├─ benutzer.sql
+├─ tests/
+└─ composer.json              ← Autoloading (PSR-4) + optionale Pakete
+```
 
 ---
 
 ## Serverauslastung und Anforderungen
 
-> **Alle Zahlen in diesem Abschnitt sind Schätzungen**, abgeleitet aus dem Design (alles in Arrays) und typischen Werten von PHP, MariaDB und MongoDB. Sie ersetzen keinen Lasttest. Verlässliche Werte liefert erst eine Messung, sobald die erste Ressource vollständig läuft (siehe [Messen statt schätzen](#messen-statt-schätzen)).
+> **Alle Zahlen sind Schätzungen** aus dem Aufbau des Codes und typischen Werten von PHP und MariaDB. Messwerte ersetzen sie, sobald ein Lasttest gelaufen ist (siehe [Messen](#messen-statt-schätzen)).
 
-### Wo die Last entsteht
+### Die zwei größten Kostenpunkte heute
 
-| Arbeitsschritt | CPU | RAM | Bewertung |
-|---|---|---|---|
-| Token prüfen (HMAC-SHA256) | sehr gering | – | vernachlässigbar |
-| Routing, Rechteprüfung, Mapping | gering | gering | vernachlässigbar |
-| JSON lesen/schreiben | gering | mittel | schnell, in C implementiert |
-| CSV / TSV | mittel | mittel | unkritisch |
-| XML | mittel | mittel | unkritisch |
-| YAML (`symfony/yaml`) | hoch | mittel | reines PHP, spürbar langsamer |
-| **XLSX (`phpoffice/phpspreadsheet`)** | **hoch** | **sehr hoch** | teuerster Codec, eigenes Limit |
-| Datenbankabfrage | – | – | hängt von Indizes und DB-Server ab, nicht vom Gateway |
-| FileDriver | mittel | hoch | liest bei jedem Request die komplette Datei |
+**1. Basic Auth: bcrypt bei jedem Request.** `password_verify()` ist absichtlich langsam, je nach CPU grob **50–100 ms** pro Prüfung. Das ist mehr als der ganze Rest des Requests zusammen.
 
-**Der Engpass ist der Arbeitsspeicher, nicht die CPU.** Das ist eine direkte Folge der Entscheidung „alles in einem Array“.
+| Anmeldung | Kosten pro Request | Durchsatz pro CPU-Kern (grob) |
+|---|---|---|
+| Basic Auth (heute) | 50–100 ms CPU | **10–20 Requests/s** |
+| Token (🔜) | < 0,1 ms | 100–300 Requests/s, dann begrenzt durch die Datenbank |
+
+**2. Schema bei jedem Request auslesen.** `SHOW COLUMNS` und die Abfragen auf `INFORMATION_SCHEMA` kosten je nach Server einige bis mehrere zehn Millisekunden. Beim `DELETE` werden alle freigegebenen Tabellen untersucht. Mit dem Schema-Cache (🔜) fällt das weg.
 
 ### Speicherverbrauch pro Request
 
-Während eines Requests existieren die Daten zeitweise mehrfach:
-
-```
-Roh-Body (String) → dekodiertes Array → gemapptes Array → kodierte Ausgabe (String)
-```
-
-Zusätzlich sind PHP-Arrays speicherintensiv: Jeder Wert und jeder Feldname hat Verwaltungsaufwand. Faustregel: **Eine CSV-Datei braucht als PHP-Array etwa das 5- bis 10-Fache ihrer Dateigröße.**
+Weil alles in Arrays verarbeitet wird, liegen die Daten zeitweise mehrfach im Speicher (Roh-Body → Array → geprüftes Array → Ausgabe). Faustregel: **Daten im PHP-Array brauchen etwa das 5- bis 10-Fache ihrer Dateigröße.**
 
 | Request | Geschätzter Peak-RAM pro PHP-Prozess |
 |---|---|
 | `GET` einzelner Datensatz | 2–5 MB |
-| `GET` Liste mit 50 Zeilen (Standard) | 3–6 MB |
-| `GET` Liste mit 500 Zeilen (`maxLimit`) | 5–15 MB |
-| `POST` / `_convert` mit 5 MB CSV/JSON (`maxBodyBytes`) | 40–80 MB |
-| `POST` mit 1 MB XLSX (`maxBodyBytesByFormat.xlsx`) | 50–150 MB |
-| `POST` mit 5 MB XLSX (ohne eigenes Limit) | **mehrere hundert MB** |
-
-PhpSpreadsheet benötigt grob **1 KB RAM pro Zelle**. Eine Tabelle mit 10.000 Zeilen × 20 Spalten liegt damit bereits bei rund 200 MB. Deshalb hat XLSX ein eigenes, kleineres Limit. Alternativ lässt sich das Format über die Rechte nur für Admins freigeben.
-
-### Durchsatz und Antwortzeiten
-
-| Request-Art | Zeit im Gateway (geschätzt) | Bemerkung |
-|---|---|---|
-| Einzelner Datensatz lesen/ändern | 2–10 ms | plus Zeit der Datenbank |
-| Liste mit 50 Zeilen als JSON | 5–15 ms | plus Zeit der Datenbank |
-| Liste mit 500 Zeilen als XML | 20–60 ms | XML-Erzeugung ist teurer als JSON |
-| Import 5 MB CSV (mehrere tausend Zeilen) | 0,5–3 s | dominiert von Validierung und DB-Transaktion |
-| Import 1 MB XLSX | 1–5 s | dominiert vom Einlesen der Tabelle |
-
-Auf einem Server mit **2 vCPU** sind damit für typische, kleine Requests (Liste laden, Datensatz ändern) **grob 100–300 Requests pro Sekunde** realistisch, sofern die Datenbank mithält und die Filterfelder indiziert sind. Für ein internes Verwaltungstool ist das weit mehr als nötig.
-
-### PHP-FPM dimensionieren
-
-Wie viele Requests gleichzeitig bearbeitet werden, legt `pm.max_children` fest:
-
-```
-pm.max_children = RAM für PHP ÷ durchschnittlicher Speicher pro PHP-Prozess
-```
-
-- Mit dem **Durchschnitt** rechnen, nicht mit dem schlimmsten Fall (XLSX-Upload).
-- Ein PHP-FPM-Prozess braucht im Leerlauf etwa 20–40 MB, unter typischer Last etwa 40–60 MB.
-- `memory_limit = 256M` verhindert, dass ein einzelner Ausreißer den ganzen Server aufbraucht. Der Request bricht dann mit `500` ab, die anderen laufen weiter.
-- Reicht der RAM nicht für genug Prozesse, warten neue Requests in der Warteschlange. Sie werden langsamer, aber nicht abgelehnt.
-
-Beispielkonfiguration (`www.conf`) für einen Server mit 4 GB RAM:
-
-```ini
-pm                   = dynamic
-pm.max_children      = 12
-pm.start_servers     = 3
-pm.min_spare_servers = 2
-pm.max_spare_servers = 5
-pm.max_requests      = 500   ; Prozess nach 500 Requests neu starten (gegen Speicherlecks)
-```
-
-### RAM-Aufteilung: Beispiel mit 4 GB (alles auf einem Server bzw. in Docker Compose)
-
-| Dienst | RAM |
-|---|---|
-| Betriebssystem + Docker | ~500 MB |
-| nginx | ~30 MB |
-| PHP-FPM: 12 Prozesse × ~50 MB | ~600 MB |
-| OPcache | 128 MB |
-| MariaDB (`innodb_buffer_pool_size`) | 1 GB |
-| MongoDB (`wiredTigerCacheSizeGB`) | 1 GB |
-| Reserve (Upload-Spitzen, Dateisystem-Cache) | ~700 MB |
-
-> **Achtung bei MongoDB:** Standardmäßig belegt MongoDB als Cache die Hälfte von (RAM − 1 GB). Ohne Begrenzung nimmt sie MariaDB und PHP den Speicher weg. Im Container deshalb immer begrenzen:
->
-> ```yaml
-> mongo:
->   image: mongo:8
->   command: ["--wiredTigerCacheSizeGB", "1"]
-> ```
->
-> Wird MongoDB nicht genutzt, kann der Server mit 2 GB RAM auskommen.
+| `GET` Liste mit 100 Zeilen (Standard) | 3–8 MB |
+| `GET` Liste mit 1000 Zeilen (Maximum) | 10–25 MB |
+| 🔜 `POST` mit 5 MB CSV/JSON | 40–80 MB |
+| 🔜 `POST` mit 1 MB XLSX | 50–150 MB (PhpSpreadsheet: grob 1 KB pro Zelle) |
 
 ### Empfohlene Servergrößen
 
-| Einsatz | Gleichzeitige Nutzer | CPU | RAM | Speicher |
+| Einsatz | Nutzer gleichzeitig | CPU | RAM | Speicher |
 |---|---|---|---|---|
-| Entwicklung / Schulung, nur MariaDB | < 10 | 1–2 vCPU | 2 GB | 20 GB SSD |
-| Entwicklung mit MariaDB + MongoDB | < 10 | 2 vCPU | 4 GB | 20 GB SSD |
-| Interner Betrieb (eine Einrichtung) | 50–200 Nutzer, ~10–30 Requests/s Spitze | 2 vCPU | 4 GB | 40 GB SSD |
-| Größerer Betrieb / mehrere Standorte | mehrere hundert Nutzer | 4 vCPU | 8 GB, Datenbank auf eigenem Server | 80 GB+ SSD |
+| Entwicklung / Ausbildung (XAMPP) | < 10 | 1–2 Kerne | 2 GB | 10 GB |
+| Interner Betrieb, Basic Auth | bis ~20 aktive | 2 vCPU | 2–4 GB | 20 GB SSD |
+| Interner Betrieb, Token-Login | 50–200 | 2 vCPU | 4 GB | 40 GB SSD |
+| mit MongoDB auf demselben Server | wie oben | +1 vCPU | +1–2 GB | +20 GB |
 
-Der Speicherplatz wird vor allem von Datenbanken, Logs und Backups belegt. Das Gateway selbst inklusive Composer-Abhängigkeiten braucht unter 100 MB.
+**MongoDB im Container begrenzen.** Standardmäßig nimmt sich MongoDB als Cache die Hälfte von (RAM − 1 GB):
 
-### Software-Anforderungen für den Server
+```yaml
+mongo:
+  image: mongo:8
+  command: ["--wiredTigerCacheSizeGB", "1"]
+```
 
-| Komponente | Empfehlung |
-|---|---|
-| Betriebssystem | Linux (Debian/Ubuntu LTS) oder Docker / Docker Compose |
-| Webserver | nginx + PHP-FPM (alternativ Apache mit `mod_proxy_fcgi`) |
-| PHP | 8.2+ mit `pdo_mysql`, `json`, `simplexml`, `xmlwriter`, `mbstring`, `opcache` |
-| Datenbank | MariaDB 10.11 LTS oder 11.x |
-| Optional | MongoDB 7/8 + PHP-Extension `mongodb` |
-| HTTPS | Zertifikat (z. B. Let's Encrypt oder internes CA-Zertifikat) |
-
-**Empfohlene `php.ini`-Werte**
+### PHP-Einstellungen
 
 ```ini
 memory_limit        = 256M
-post_max_size       = 8M     ; etwas über maxBodyBytes (5 MB)
+post_max_size       = 8M      ; etwas über maxAnfrageBytes
 upload_max_filesize = 8M
 max_execution_time  = 30
-display_errors      = Off    ; in Produktion
+display_errors      = Off     ; außerhalb der Entwicklung
 
 opcache.enable              = 1
 opcache.memory_consumption  = 128
-opcache.validate_timestamps = 0   ; Produktion: nach Code-Änderung PHP-FPM neu starten
 ```
+
+PHP-FPM: `pm.max_children ≈ RAM für PHP ÷ durchschnittlicher Speicher pro Prozess` (grob 40–60 MB). Bei 4 GB RAM mit MariaDB auf demselben Server sind etwa 10–12 Prozesse sinnvoll.
 
 ### Typische Engpässe
 
-1. **Fehlende Datenbank-Indizes.** Jedes Feld in `filterable` und `sortable` sollte einen Index haben, sonst wird bei jedem Filter die ganze Tabelle durchsucht. Das ist der häufigste Grund für eine langsame API.
-2. **Mehrere große Imports gleichzeitig.** Einige parallele 5-MB-Uploads können den RAM-Bedarf von PHP kurzzeitig verdoppeln. Hilfe: kleineres `maxBodyBytes` oder Importe nur für bestimmte Rollen.
-3. **XLSX.** Eigenes Limit (`maxBodyBytesByFormat.xlsx`) oder nur für Admins freigeben.
-4. **FileDriver.** Gut bis etwa ein paar tausend Zeilen pro Datei. Bei vielen gleichzeitigen Schreibzugriffen warten Requests auf die Dateisperre.
-5. **Zu hohes `maxLimit`.** 5.000 Zeilen als XML auszugeben kostet ein Vielfaches von 500.
+1. **Basic Auth bei vielen Requests:** Token-Login nutzen.
+2. **Fehlende Indizes:** Jede Spalte, nach der oft gefiltert oder sortiert wird, braucht einen Index. Fremdschlüssel-Spalten (`FTID` …) sowieso, weil die Lösch-Prüfung danach sucht.
+3. **Große Imports:** mehrere 5-MB-Uploads gleichzeitig verdoppeln kurzzeitig den RAM-Bedarf.
+4. **`limit=1000` in XML/XLSX:** kostet ein Vielfaches von 100 Zeilen JSON.
 
 ### Messen statt schätzen
 
-**Debug-Header:** Mit `GATEWAY_DEBUG=1` hängt das Gateway an jede Antwort echte Messwerte an:
+🔜 Mit `API_DEBUG=1` hängt die API an jede Antwort echte Messwerte:
 
 ```http
-X-Debug-Memory: 6.2 MB      ; memory_get_peak_usage(true)
-X-Debug-Time: 8.4 ms        ; Laufzeit im Gateway
+X-Debug-Memory: 4.1 MB
+X-Debug-Time: 73.2 ms
 ```
 
-> Nur in der Entwicklung aktivieren. In Produktion verraten diese Header unnötig Details über den Server.
-
-**Lasttest:** Sobald die erste Ressource vollständig läuft, z. B. mit `ab` (Apache Bench), `wrk` oder `k6`:
+Lasttest, z. B. mit Apache Bench (bei XAMPP unter `apache/bin/ab`):
 
 ```bash
-# 1000 Requests, davon 20 gleichzeitig
-ab -n 1000 -c 20 \
-   -H "Authorization: Bearer $TOKEN" \
-   "https://gateway.local/api/users?limit=50"
+ab -n 500 -c 10 -A admin@test.com:geheim \
+   "http://localhost/MyEndPoint/api.php/fahrzeuge?limit=50"
 ```
 
-Darauf achten:
-
-| Messwert | Woher | Zielwert (interner Betrieb) |
-|---|---|---|
-| Requests pro Sekunde | Ausgabe von `ab` / `wrk` / `k6` | deutlich über der erwarteten Spitzenlast |
-| Antwortzeit (95. Perzentil) | Ausgabe von `ab` / `wrk` / `k6` | < 200 ms für normale Listen |
-| RAM der PHP-FPM-Prozesse | `docker stats`, `htop` | stabil, kein stetiges Wachstum |
-| Langsame Datenbankabfragen | MariaDB `slow_query_log` | keine Abfrage > 100 ms |
-
-Die gemessenen Werte gehören anschließend in diesen Abschnitt und ersetzen die Schätzungen.
+| Messwert | Zielwert (interner Betrieb) |
+|---|---|
+| Antwortzeit, 95. Perzentil | < 200 ms für normale Listen |
+| RAM der PHP-Prozesse | stabil, kein stetiges Wachstum |
+| langsame SQL-Abfragen (`slow_query_log`) | keine über 100 ms |
 
 ---
 
 ## Sicherheit
 
-Checkliste für den Betrieb:
-
-- [ ] `GATEWAY_TOKEN_SECRET` ist gesetzt, zufällig und mindestens 32 Zeichen lang. **Es gibt keinen Fallback-Wert**, ohne Secret startet das Gateway nicht.
-- [ ] Document Root zeigt auf `public/`. `config/`, `src/` und `data/` sind von außen nicht erreichbar.
-- [ ] `config/.env` ist nicht im Git-Repository.
-- [ ] Jede Verbindung nutzt einen eigenen Datenbank-Benutzer mit minimalen Rechten.
-- [ ] HTTPS ist erzwungen. Tokens werden nie über unverschlüsseltes HTTP übertragen.
-- [ ] Jede Ressource hat eine `access`-Regel. Ohne Regel ist sie gesperrt.
-- [ ] Felder wie Passwörter sind `writeonly` bzw. `type: password`.
-- [ ] `display_errors` ist in Produktion aus.
-- [ ] `GATEWAY_DEBUG` ist in Produktion `0` (keine Debug-Header).
-
-Eingebaute Schutzmaßnahmen:
+### Was `api.php` schon richtig macht
 
 | Risiko | Schutz |
 |---|---|
-| SQL-Injection über Werte | Prepared Statements |
-| SQL-Injection über Feld-/Sortiernamen | Nur Namen aus dem Mapping, Whitelist über `filterable`/`sortable` |
-| NoSQL-Injection (MongoDB) | Werte nur skalar, Operatoren nur aus fester Liste, Regex-Sonderzeichen maskiert |
-| XXE (XML External Entities) | Entity-Loading deaktiviert |
-| CSV-Injection (Formeln in Excel) | Zellen, die mit `=`, `+`, `-` oder `@` beginnen, werden in der Ausgabe mit `'` maskiert |
-| Ausspähen fremder IDs | `:own` liefert `404` statt `403` |
-| Passwort-Leaks | `writeonly`-Felder werden nie ausgegeben, auch nicht in `_meta` |
-| Speicher-Erschöpfung | `maxBodyBytes`, `maxLimit` |
-| Informationsleck bei Fehlern | Nur generische Meldung + `requestId`, Details im Log |
+| SQL-Injection über Werte | Prepared Statements, `ATTR_EMULATE_PREPARES = false` |
+| SQL-Injection über Tabellen-/Spaltennamen | nur aus `RESSOURCEN` bzw. dem Schema, zusätzlich in Backticks |
+| Zugriff auf beliebige Tabellen | Whitelist `RESSOURCEN` |
+| Konten über die Fahrzeug-API auslesen | getrennte Datenbank und Verbindung |
+| Rolle fälschen | Rolle kommt aus der Datenbank, nie vom Client |
+| Passwörter im Klartext | `password_hash()` / `password_verify()`, Hash wird nie ausgegeben |
+| Datensätze mit kaputten Verweisen | Prüfung beim Speichern und Löschen |
+| HTML-Fehlerseiten | jede Exception wird zu einer JSON-Antwort |
 
-**Empfohlen**: ein Audit-Log für alle schreibenden Zugriffe (`POST`, `PUT`, `PATCH`, `DELETE`) mit Zeitpunkt, Benutzer, Ressource und ID. Bei personenbezogenen Daten ist das auch aus Datenschutzsicht sinnvoll.
+### Was vor dem Einsatz außerhalb von localhost geändert werden muss
 
----
+- [ ] **`API_DEBUG` steht auf `true`.** Damit gehen SQL-Fehlermeldungen an den Client, und die Anmeldung verrät, dass ein Konto existiert und ein Klartext-Passwort hat. Standard muss `false` sein, einschalten nur über `.env`.
+- [ ] **Datenbank-Benutzer `root` ohne Passwort.** Eigene Benutzer anlegen: für die Fahrzeug-DB nur `SELECT, INSERT, UPDATE, DELETE`, für die Konten-DB nur `SELECT` (siehe `benutzer.sql`).
+- [ ] **Zugangsdaten stehen im Code.** Sie gehören in `config/.env` und damit nicht ins Repo.
+- [ ] **`Access-Control-Allow-Origin: *`.** Erlaubte Adressen in der Config festlegen.
+- [ ] **Kein Schutz gegen Durchprobieren von Passwörtern.** Mit Basic Auth ist jeder Request ein Versuch. Fehlversuche begrenzen (`429`).
+- [ ] **Unterschiedliche Antwortzeit** bei unbekanntem Konto (keine bcrypt-Prüfung) und falschem Passwort (bcrypt-Prüfung). Damit lässt sich herausfinden, welche Konten existieren. Abhilfe: auch bei unbekanntem Konto einen Dummy-Hash prüfen.
+- [ ] **HTTPS erzwingen.** Bei Basic Auth steht das Passwort in jedem Request (nur Base64, nicht verschlüsselt).
+- [ ] **`.idea/` ist eingecheckt.** In die `.gitignore` aufnehmen.
 
-## Erweitern
+### Geplante Schutzmaßnahmen der 2.0
 
-### Eigenen Codec hinzufügen
-
-```php
-namespace Gateway\Codec;
-
-final class NdjsonCodec implements Codec
-{
-    public function mimeTypes(): array
-    {
-        return ['application/x-ndjson'];
-    }
-
-    public function shortName(): string
-    {
-        return 'ndjson';
-    }
-
-    public function decode(string $body): array
-    {
-        $rows = [];
-        foreach (preg_split('/\R/', trim($body)) as $i => $line) {
-            if ($line === '') {
-                continue;
-            }
-            $row = json_decode($line, true);
-            if (!is_array($row)) {
-                throw new DecodeException("Zeile " . ($i + 1) . " ist kein gültiges JSON-Objekt.");
-            }
-            $rows[] = $row;
-        }
-        return $rows;
-    }
-
-    public function encode(array $rows): string
-    {
-        return implode("\n", array_map(
-            fn(array $r) => json_encode($r, JSON_UNESCAPED_UNICODE),
-            $rows
-        )) . "\n";
-    }
-}
-```
-
-Registrieren in `config/gateway.php`:
-
-```php
-'codecs' => [
-    Gateway\Codec\NdjsonCodec::class,
-],
-```
-
-Damit ist das Format sofort für alle Ressourcen als Ein- und Ausgabe verfügbar und taucht in `/api/_meta` auf.
-
-### Eigenen Treiber hinzufügen
-
-Interface `Driver` implementieren und in der Konfiguration registrieren:
-
-```php
-'drivers' => [
-    'redis' => Gateway\Driver\RedisDriver::class,
-],
-```
-
-Danach kann eine Verbindung `'driver' => 'redis'` verwenden.
-
-### Eigener Handler für komplexe Ressourcen
-
-Manche Ressourcen passen nicht in ein 1:1-Mapping, z. B. wenn ein Datensatz auf mehrere Tabellen verteilt gespeichert wird. Dafür kann eine Ressource statt `connection` einen eigenen Handler angeben, der das `Driver`-Interface implementiert:
-
-```php
-'schluessel_komplett' => [
-    'handler' => App\Handler\SchluesselHandler::class,
-    'fields'  => [ /* API-Felder */ ],
-    'access'  => ['admin' => 'crud'],
-],
-```
-
-Auth, Rechte, Codecs und Validierung funktionieren dabei genauso wie bei allen anderen Ressourcen. Nur das Speichern übernimmt der eigene Code.
+| Risiko | Schutz |
+|---|---|
+| Speicher-Erschöpfung | `maxAnfrageBytes`, `limitMaximum`, eigenes XLSX-Limit |
+| XML External Entities (XXE) | Entity-Loading deaktiviert |
+| CSV-Injection (Formeln in Excel) | Zellen mit `=`, `+`, `-`, `@` am Anfang werden bei der Ausgabe maskiert |
+| NoSQL-Injection | nur skalare Werte, Operatoren aus fester Liste, Regex maskiert |
+| Personendaten sichtbar | `versteckt` / `nurSchreiben` pro Feld, `rechte` pro Ressource |
+| Token-Fälschung | kein Standard-Secret, mindestens 32 Zeichen, sonst startet die API nicht |
 
 ---
 
 ## Bewusst nicht enthalten
 
-Damit das Gateway überschaubar bleibt, gibt es folgende Dinge **nicht**:
-
-| Nicht enthalten | Grund | Alternative |
+| Nicht enthalten | Grund | Stattdessen |
 |---|---|---|
-| Streaming großer Datenmengen | Einfachheit, Arrays reichen | Pagination mit `limit`/`offset` |
-| Backend-Wahl per Request | Sicherheit | Backend in der Config festlegen |
-| Verschachtelte Daten / Relationen | Jedes Format soll jede Zeile abbilden können | IDs + zweiter Request |
-| SQL als Eingabe | Sicherheit | JSON/CSV/XML-Eingabe |
-| Joins über mehrere Ressourcen | Folgt aus „nur flach“ | Eigener Handler oder DB-View als `source` |
-| Benutzerverwaltung / Login | Gateway prüft Tokens nur | Token kommt von einem eigenen Login-Dienst |
+| Streaming großer Datenmengen | Einfachheit | Seiten mit `limit`/`offset` |
+| Backend-Wahl per Request | Sicherheit | Backend in der Config |
+| Verschachtelte Daten, eingebettete Verweise | jedes Format soll jede Zeile abbilden | IDs + zweiter Request |
+| SQL als Eingabe | Sicherheit | JSON, Formular, CSV, XML |
+| Joins über mehrere Ressourcen | folgt aus „nur flach“ | Datenbank-View als `quelle` |
+| Benutzerverwaltung über die API | Konten-DB ist absichtlich getrennt | phpMyAdmin / eigenes Admin-Tool |
 
 ---
 
 ## Roadmap
 
-Bis einschließlich Schritt 6 ist das Gateway funktionsfähig. Alles danach sind Erweiterungen, die nur neue Klassen hinzufügen.
+### Version 1 (`api.php`)
 
-- [ ] **1.** Kernel, Router, Request/Response, einheitliche Fehlerantworten
-- [ ] **2.** Konfiguration laden und beim Start validieren (`bin/check-config.php`)
-- [ ] **3.** Token prüfen + `AccessPolicy` (CRUD-Schreibweise, `:own`, `minLevel`)
-- [ ] **4.** `JsonCodec` + `CsvCodec`
-- [ ] **5.** `PdoDriver` (MariaDB) + `FieldMapper` + `TypeCaster`
-- [ ] **6.** Erste Ressource läuft vollständig durch (alle CRUD-Methoden, Filter, Pagination)
-- [ ] **7.** `XmlCodec`, `YamlCodec`, `SqlCodec` (nur Ausgabe)
-- [ ] **8.** `FileDriver` mit atomarem Schreiben
-- [ ] **9.** `MongoDriver`
-- [ ] **10.** `/api/_meta` und `/api/_convert`
-- [ ] **11.** `XlsxCodec` mit eigenem Größenlimit, `Hydrator` (Obj), Audit-Log, `bin/migrate.php`
-- [ ] **12.** Debug-Header (`X-Debug-Memory`, `X-Debug-Time`), Lasttest, Schätzwerte durch Messwerte ersetzen
+- [x] CRUD für alle Tabellen aus `RESSOURCEN`
+- [x] Felder, Pflichtfelder, Primärschlüssel automatisch aus der Datenbank
+- [x] Verweise über Fremdschlüssel und Namensregel, Prüfung beim Speichern und Löschen
+- [x] Filter mit `*`, Sortierung, `limit`/`offset`
+- [x] HTML-Formulare (`_method`, `operation`, ID als Feld)
+- [x] Basic Auth gegen getrennte Konten-Datenbank, Rollen pro Methode
+- [x] Übersetzung von MySQL-Fehlern in passende Statuscodes
+- [x] Übersicht `GET api.php`, Client, Swagger-Doku
+
+### Version 2.0
+
+**Phase 1: Aufräumen und Grundlage**
+- [ ] SQL-Dump der Datenbank `fahrzeugverwaltung` ins Repo
+- [ ] `.gitignore` (`.idea/`, `config/.env`, `cache/`)
+- [ ] `API_DEBUG` standardmäßig aus, Zugangsdaten in `.env`
+- [ ] `composer.json` mit PSR-4-Autoloading
+- [ ] Konstanten → `config/gateway.php` + Prüfung beim Start
+
+**Phase 2: Zerlegen in Klassen (Verhalten bleibt gleich)**
+- [ ] `Response`, `ErrorHandler`, `Router`, `Request`
+- [ ] `PdoDriver` mit `schema()` + Schema-Cache
+- [ ] `FieldMapper`, `ReferenceChecker`
+- [ ] `BasicAuthenticator`, `AccessPolicy` (globale Rollen)
+- [ ] `JsonCodec`, `FormCodec`
+- [ ] `api.php` startet nur noch den Kernel. Client und Swagger funktionieren unverändert.
+
+**Phase 3: Neue Funktionen**
+- [ ] Rechte pro Ressource, Felder verstecken / nur lesen / nur schreiben
+- [ ] `POST /_login` mit Token, Fehlversuche begrenzen
+- [ ] `client/index.php` auf Token umstellen
+- [ ] Filter-Operatoren, `fields`, Seitenangaben als Header
+- [ ] `CsvCodec`, `XmlCodec` (Ein- und Ausgabe), `SqlCodec` (nur Ausgabe)
+- [ ] `/_openapi`, `docs.html` umstellen, `openapi.yaml` entfernen
+
+**Phase 4: Weitere Backends und Werkzeuge**
+- [ ] `FileDriver`
+- [ ] `MongoDriver`, Verweise über Backend-Grenzen
+- [ ] `YamlCodec`, `XlsxCodec` (mit eigenem Größenlimit)
+- [ ] `/_convert`
+- [ ] `bin/klassen-erzeugen.php` (ersetzt `api_outerlayer/`)
+- [ ] `bin/umziehen.php`
+- [ ] Debug-Header, Lasttest, Schätzwerte durch Messwerte ersetzen
 
 ---
 
