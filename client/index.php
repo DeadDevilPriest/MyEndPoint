@@ -5,7 +5,7 @@ $erlaubteOperationen = ['GET', 'POST', 'UPDATE', 'DELETE'];
 
 // Adresse der API, von dieser Seite aus gesehen: client/ liegt im API-Ordner.
 // Mit der .htaccess geht auch '../api'.
-$apiUrl = '../api.php';
+$apiUrl = '../api/api';
 ?>
 <!DOCTYPE html>
 <html lang="de">
