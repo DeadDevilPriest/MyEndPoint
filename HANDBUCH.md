@@ -429,6 +429,7 @@ Jeder Fehler hat einen Statuscode und eine Meldung auf Deutsch:
 | `413` | Anfrage zu groß 🔜 | Datei aufteilen |
 | `415` | Eingabeformat nicht verfügbar 🔜 | `Content-Type` prüfen |
 | `500` | Fehler im Server | Administrator fragen (Details stehen im Server-Log) |
+| `503` | Datenbank nicht erreichbar 🔜 | später erneut versuchen, läuft MariaDB bzw. MongoDB? (XAMPP: MySQL im Control Panel starten) |
 
 Die vollständige Liste liefert `GET api.php/_hilfe/fehler`.
 
@@ -447,6 +448,7 @@ MyEndPoint – Werkzeuge
 
   php bin/config-pruefen.php          Konfiguration prüfen
   php bin/schema-aktualisieren.php    Datenbank-Schema neu einlesen (nach Tabellenänderungen)
+  php bin/bausteine-aktualisieren.php Bausteine (Connectoren, Codecs) neu suchen
   php bin/klassen-erzeugen.php        PHP-Klassen aus den Tabellen erzeugen
   php bin/umziehen.php                Daten einer Ressource in ein anderes Backend kopieren
 
@@ -478,6 +480,7 @@ BEISPIEL
 |---|---|
 | `config-pruefen.php` | nach jeder Änderung an `config/gateway.php` |
 | `schema-aktualisieren.php` | nach neuen Tabellen oder Spalten in der Datenbank |
+| `bausteine-aktualisieren.php` | nach einem neuen oder entfernten Connector bzw. Codec (in Produktion Pflicht, in der Entwicklung automatisch) |
 | `klassen-erzeugen.php` | wenn PHP-Code mit typisierten Objekten arbeiten soll |
 | `umziehen.php` | beim Wechsel einer Ressource auf ein anderes Backend |
 
@@ -490,6 +493,8 @@ BEISPIEL
 | `404` bei `/api/fahrzeuge`, aber `api.php/fahrzeuge` geht | `.htaccess` wird nicht beachtet | in Apache `mod_rewrite` aktivieren und `AllowOverride All` setzen, oder `api.php/…` benutzen |
 | `500` mit „Datenbank … fehlt“ | Datenbank nicht importiert | SQL-Datei in phpMyAdmin importieren |
 | Neue Spalte taucht nicht auf | Schema-Cache ist veraltet 🔜 | `php bin/schema-aktualisieren.php` |
+| Neues Format bzw. neue Datenbank wird nicht erkannt 🔜 | Baustein-Cache veraltet, Abhängigkeit fehlt oder Datei falsch benannt | `php bin/bausteine-aktualisieren.php`, danach `php bin/config-pruefen.php` (nennt den Grund) |
+| `503` „Datenbank nicht erreichbar“ 🔜 | Datenbankserver läuft nicht oder Zugangsdaten falsch | MySQL in XAMPP starten, Zugangsdaten in `config/.env` prüfen |
 | `400` „Unbekanntes Feld“ | Tippfehler oder Feld gibt es nicht | erlaubte Felder stehen in der Meldung bzw. in `_hilfe/<ressource>` |
 | `400` „Eintrag … gibt es nicht“ | Verweis zeigt ins Leere | gültige IDs der Zielressource abrufen (z. B. `GET api.php/fahrzeugtypen`) |
 | `409` beim Löschen | Datensatz wird noch verwendet | abhängige Datensätze zuerst ändern oder löschen |

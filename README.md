@@ -23,6 +23,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 - [Formate (Codecs)](#formate-codecs)
 - [Datenmodell und Verweise](#datenmodell-und-verweise)
 - [Speicher-Backends (Treiber)](#speicher-backends-treiber)
+- [Verbindungen und Bausteine](#verbindungen-und-bausteine)
 - [API-Dokumentation (Swagger)](#api-dokumentation-swagger)
 - [Architektur und Umbau](#architektur-und-umbau)
 - [Serverauslastung und Anforderungen](#serverauslastung-und-anforderungen)
@@ -45,6 +46,9 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Backend-Wahl | **nur über die Konfiguration** | ein Client kann nie bestimmen, wo Daten landen |
 | Datenstruktur | **nur flache Datensätze**, Verweise als IDs | jedes Format kann jede Zeile abbilden, auch CSV |
 | Felder | **automatisch aus der Datenbank**, Config nur für Ausnahmen | so wie `api.php` es heute schon macht |
+| Verbindungen | **ein `ConnectionManager`** baut alle Verbindungen auf, erst bei Bedarf, höchstens eine pro Request. Die API spricht nur mit dem Treiber. | ein Ort für Zugangsdaten und Optionen, Backends austauschbar, testbar |
+| Bausteine | **werden automatisch erkannt** (`PluginFinder`): neue Datei in den Ordner legen, fertig. Die Config hat Vorrang, in Produktion wird nur auf Befehl gesucht. | neue Datenbanken und Formate ohne Änderung am Kern |
+| PHP-Version | **8.2 oder neuer empfohlen** (8.1 läuft) | ab 8.2 erscheinen Passwörter nicht mehr im Stacktrace (siehe [Stolperfallen](#stolperfallen)) |
 | Abwärtskompatibilität | `api.php/<ressource>/<id>`, Formulare und `client/index.php` funktionieren weiter | die Aufgabe baut darauf auf |
 | Sprache | **Deutsch** für Config, JSON-Schlüssel, Fehlermeldungen und Hilfe, **Englisch** für Klassen und Namespaces (PHP-Konvention) | Clients sehen nur Deutsch, der Code folgt PSR-4 |
 
@@ -52,7 +56,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 
 ## Schnellstart (XAMPP)
 
-**Voraussetzung:** PHP 8.1 oder neuer, MariaDB/MySQL, Apache mit `mod_rewrite` (bei XAMPP aktiv).
+**Voraussetzung:** PHP 8.1 oder neuer (8.2+ empfohlen), MariaDB/MySQL, Apache mit `mod_rewrite` (bei XAMPP aktiv).
 
 1. Den Ordner nach `htdocs/MyEndPoint` kopieren.
 2. Die Datenbank `fahrzeugverwaltung` mit den Tabellen `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe` und `fahrzeughalter` anlegen.
@@ -136,13 +140,17 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 
 Ein neues Format braucht genau **einen** Codec, ein neues Backend genau **einen** Treiber. Formate und Backends lassen sich frei kombinieren: Daten aus MongoDB können z. B. als CSV ausgegeben werden, ohne dafür eigenen Code zu schreiben.
 
-### Drei getrennte Bausteine
+### Getrennte Bausteine
 
 | Baustein | Aufgabe | Weiß nichts über |
 |---|---|---|
 | **Codec** | Format ↔ neutrale Zeilen | Datenbanken |
 | **Treiber** | neutrale Zeilen ↔ Speicher, liefert das Schema | Formate |
 | **FieldMapper** | Namen angleichen, Ausnahmen aus der Config, Prüfung, Verweise | Formate, Speicherart |
+| **ConnectionManager** | Verbindungen aufbauen, erst bei Bedarf, eine pro Request | Abfragen, Formate, HTTP |
+| **PluginFinder** | neue Codecs und Connectoren automatisch finden | was die Bausteine tun |
+
+Details zu den beiden letzten: [Verbindungen und Bausteine](#verbindungen-und-bausteine).
 
 ### Die Datenbank ist das Template
 
@@ -298,7 +306,8 @@ Fehler kommen immer als JSON, auch wenn ein anderes Ausgabeformat angefragt wurd
 | `409` | doppelter Wert, oder Datensatz wird noch verwendet |
 | `413` | Anfrage zu groß 🔜 |
 | `415` | Eingabeformat nicht verfügbar 🔜 |
-| `500` | interner Fehler |
+| `500` | interner Fehler, oder Konfiguration ungültig |
+| `503` | Datenbank bzw. Backend nicht erreichbar 🔜 (heute `500`) |
 
 `401` und `403` gibt es nicht mehr, sobald die Anmeldung entfernt ist.
 
@@ -420,6 +429,13 @@ return [
         'limitMaximum'    => 1000,
     ],
 
+    // Bausteine (Connectoren, Codecs) – siehe „Verbindungen und Bausteine“
+    'bausteine' => [
+        'automatischSuchen' => getenv('API_DEBUG') === '1',   // Entwicklung: ja, Produktion: nein
+        'abschalten' => ['xlsx'],                              // gefunden, aber nicht anbieten
+        'ersetzen'   => [],                                    // z. B. ['pdo' => App\MeinPdoConnector::class]
+    ],
+
     'cors' => [
         'erlaubteUrspruenge' => ['http://localhost', 'http://localhost:5173'],
     ],
@@ -521,7 +537,9 @@ Bei SQL-Tabellen werden alle Felder automatisch erkannt. Hier wird nur eingetrag
 
 Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 
-- Jede Ressource verweist auf eine existierende Verbindung, deren Treiber installiert ist.
+- Jede Ressource verweist auf eine existierende Verbindung.
+- Für jeden `treiber` in `verbindungen` wurde ein Connector-Baustein gefunden **und** ist verfügbar. Sonst kommt eine klare Meldung, z. B. „Treiber `mongo` ist konfiguriert, aber nicht verfügbar: PHP-Extension `mongodb` fehlt“.
+- Klassen in `bausteine.ersetzen` existieren und setzen das passende Interface um.
 - `aktionen` besteht nur aus `c`, `r`, `u`, `d`.
 - Verweise zeigen auf existierende Ressourcen.
 - Kein Ressourcenname beginnt mit `_` (reserviert für `_hilfe`, `_openapi` …).
@@ -546,11 +564,13 @@ Das Eingabeformat bestimmt der `Content-Type`, das Ausgabeformat der `Accept`-He
 | SQL | `application/sql` | ❌ nie | 🔜 | – |
 | Text | `text/plain` | – | 🔜 nur für Hilfe-Befehle | – |
 
-Jeder Codec setzt dieselbe Schnittstelle um:
+Codecs werden wie Connectoren **automatisch erkannt**: Eine neue Datei `src/Codec/NdjsonCodec.php` reicht, und das Format steht zur Verfügung (siehe [Bausteine automatisch erkennen](#bausteine-automatisch-erkennen-pluginfinder)). Jeder Codec setzt dieselbe Schnittstelle um:
 
 ```php
 interface Codec
 {
+    public static function typ(): string;          // Kurzname, z. B. 'csv' – auch für ?format=
+    public static function verfuegbar(): bool;     // z. B. ist symfony/yaml installiert?
     public function mimeTypes(): array;
     public function decode(string $body): array;   // → Liste von Zeilen
     public function encode(array $rows): string;
@@ -618,7 +638,7 @@ Die API prüft dabei selbst:
 
 ## Speicher-Backends (Treiber)
 
-Jeder Treiber setzt dieselbe Schnittstelle um:
+Ein Treiber stellt die Abfragen. Die Verbindung baut er **nicht selbst** auf, sondern holt sie sich beim `ConnectionManager` (siehe [Verbindungen und Bausteine](#verbindungen-und-bausteine)). Jeder Treiber setzt dieselbe Schnittstelle um:
 
 ```php
 interface Driver
@@ -666,6 +686,291 @@ Für Clients ändert sich nichts: gleiche URLs, gleiche Feldnamen, gleiche Forma
 
 ---
 
+## Verbindungen und Bausteine
+
+### Drei Schichten
+
+```
+API (HTTP)  →  Treiber (Abfragen)  →  ConnectionManager (nur Verbindungsaufbau)
+```
+
+| Schicht | Aufgabe | Kennt |
+|---|---|---|
+| **API** (Router, Controller) | Request verstehen, Antwort bauen | nur den Treiber |
+| **Treiber** (`PdoDriver`, `MongoDriver`, `FileDriver`) | SQL bzw. Mongo-Abfragen, Schema, Fehlerübersetzung | seine Verbindung |
+| **ConnectionManager** | Verbindung aufbauen, erst bei Bedarf, höchstens eine pro Request und Verbindungsname | die Config und die Connectoren |
+
+Die API sagt also nicht „baue die Verbindung auf“, sondern „gib mir den Treiber für `fahrzeuge`“. Der Treiber holt sich die Verbindung, und die wird erst in diesem Moment aufgebaut.
+
+**Heute** übernimmt das in `api.php` die Funktion `db()`: ein statischer Singleton mit fest eingetragenen Konstanten. Der `ConnectionManager` ersetzt ihn.
+
+### ConnectionManager
+
+**Was er bringt:**
+
+- **Ein Ort für alles rund um die Verbindung**: Zugangsdaten, `charset`, `ERRMODE_EXCEPTION`, `EMULATE_PREPARES = false`.
+- **Lazy**: `OPTIONS`, `?_hilfe` mit Schema-Cache oder eine Anfrage mit falschem Pfad bauen gar keine Datenbankverbindung auf. Eine Anfrage an MariaDB öffnet keine Verbindung zu MongoDB.
+- **Backends austauschbar**: MariaDB, MongoDB oder Datei unterscheiden sich nur im Connector. API und Treiber merken davon nichts.
+- **Testbar**: Für Tests lässt sich eine SQLite-Verbindung im Speicher übergeben, ganz ohne XAMPP.
+- **Saubere Fehler**: Ist die Datenbank nicht erreichbar, wird daraus `503 Datenbank nicht erreichbar`. Die Details landen nur im Log.
+
+**Regeln:**
+
+| Regel | Warum |
+|---|---|
+| **PDO umhüllen, nicht davon erben** (kein `extends PDO`) | MongoDB oder Dateien passen nicht in eine PDO-Unterklasse. Über das `Connector`-Interface passt jedes Backend. |
+| **Eine Verbindung pro Request**, nicht pro Abfrage öffnen und schließen | Jeder Aufbau kostet einige Millisekunden. PHP schließt die Verbindung am Ende des Requests von selbst. |
+| **Keine persistenten Verbindungen** (`PDO::ATTR_PERSISTENT`) | bringen hier keinen Vorteil, aber Probleme mit offenen Transaktionen und Sperren aus vorherigen Requests |
+| **Kein globaler Singleton** | Der Kernel erzeugt **einen** `ConnectionManager` und reicht ihn an die Treiber weiter. Man sieht dann jedem Treiber an, dass er eine Verbindung braucht. |
+| **Klein halten** | Er baut nur auf und hält fest. Abfragen, Schema und Fehlerübersetzung (`MYSQL_FEHLER`) gehören in den Treiber. |
+| **Passwort nie ins Log** | Verbindungsfehler selbst abfangen und nur die Meldung loggen, ohne Stacktrace (siehe [Stolperfallen](#stolperfallen)). |
+
+**Skizze:**
+
+```php
+interface Connector
+{
+    public static function typ(): string;          // 'pdo', 'mongo', 'datei' – so heißt er in der Config
+    public static function verfuegbar(): bool;     // ist die nötige PHP-Extension / Bibliothek da?
+    public function verbinden(array $config): object;
+}
+```
+
+```php
+final class PdoConnector implements Connector
+{
+    public static function typ(): string      { return 'pdo'; }
+    public static function verfuegbar(): bool { return extension_loaded('pdo'); }
+
+    public function verbinden(array $c): object
+    {
+        return new PDO($c['dsn'], $c['user'] ?? null, $c['pass'] ?? null, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]);
+    }
+}
+```
+
+```php
+final class ConnectionManager
+{
+    private array $offen = [];          // bereits aufgebaute Verbindungen dieses Requests
+    private ?array $connectoren = null; // Typ → Klasse, vom PluginFinder
+
+    public function __construct(
+        private array $verbindungen,    // aus config/gateway.php
+        private PluginFinder $finder,
+        private array $ersetzen = [],   // bausteine.ersetzen
+    ) {}
+
+    public function get(string $name): object
+    {
+        return $this->offen[$name] ??= $this->aufbauen($name);   // erst bei Bedarf, dann wiederverwenden
+    }
+
+    private function aufbauen(string $name): object
+    {
+        $c = $this->verbindungen[$name]
+            ?? throw new ConfigException("Verbindung \"$name\" ist nicht konfiguriert.");
+
+        $klasse = $this->ersetzen[$c['treiber']]
+            ?? $this->connectoren()[$c['treiber']]
+            ?? throw new ConfigException("Treiber \"{$c['treiber']}\" ist nicht verfügbar.");
+
+        try {
+            return (new $klasse())->verbinden($c);
+        } catch (Throwable $e) {
+            error_log("Verbindung \"$name\" fehlgeschlagen: " . $e->getMessage());   // ohne Stacktrace
+            throw new VerbindungFehlgeschlagen($name);                               // → 503
+        }
+    }
+
+    private function connectoren(): array
+    {
+        return $this->connectoren ??= $this->finder->finden(__DIR__ . '/../Connector', Connector::class);
+    }
+}
+```
+
+```php
+// Kernel: einmal pro Request verdrahten
+$finder       = new PluginFinder(__DIR__ . '/../cache', $config['bausteine']['automatischSuchen']);
+$verbindungen = new ConnectionManager($config['verbindungen'], $finder, $config['bausteine']['ersetzen']);
+$treiber      = new DriverFactory($verbindungen, $config['ressourcen']);
+
+// API: kennt nur noch den Treiber
+$fahrzeug = $treiber->fuer('fahrzeuge')->get('5');
+```
+
+### Bausteine automatisch erkennen (PluginFinder)
+
+**Idee:** Ein neuer Baustein wird eingebaut, indem man **eine Datei in einen Ordner legt**. Der Kern muss nicht angepasst werden (Open/Closed-Prinzip). Java bietet dafür den `ServiceLoader`, Spring das Classpath-Scanning. PHP hat nichts Eingebautes, deshalb übernimmt das der `PluginFinder`.
+
+| Ordner | Interface | Beispiel | Ergebnis |
+|---|---|---|---|
+| `src/Connector/` | `Connector` | `MongoConnector.php` | `'treiber' => 'mongo'` ist in der Config nutzbar |
+| `src/Codec/` | `Codec` | `NdjsonCodec.php` | `Content-Type: application/x-ndjson` wird verstanden |
+
+**Konvention:** Dateiname = Klassenname, Endung `…Connector.php` bzw. `…Codec.php`, Namespace passend zum Ordner (PSR-4).
+
+```php
+final class MongoConnector implements Connector
+{
+    public static function typ(): string        { return 'mongo'; }
+    public static function verfuegbar(): bool   { return extension_loaded('mongodb') && class_exists(\MongoDB\Client::class); }
+    public function verbinden(array $c): object { return new \MongoDB\Client($c['uri']); }
+}
+```
+
+**So sucht der PluginFinder:**
+
+```php
+final class PluginFinder
+{
+    public function __construct(private string $cacheOrdner, private bool $automatischSuchen) {}
+
+    /** @return array<string, class-string>  Typ → Klasse */
+    public function finden(string $ordner, string $interface): array
+    {
+        $cache = $this->cacheOrdner . '/bausteine-' . md5($interface) . '.php';
+
+        // Produktion: nur den Cache lesen. Entwicklung: neu suchen, wenn sich der Ordner geändert hat.
+        if (is_file($cache) && (!$this->automatischSuchen || filemtime($cache) >= filemtime($ordner))) {
+            return require $cache;
+        }
+        return $this->suchenUndSpeichern($ordner, $interface, $cache);
+    }
+
+    private function suchenUndSpeichern(string $ordner, string $interface, string $cache): array
+    {
+        $gefunden = [];
+        $suffix   = substr(strrchr($interface, '\\') ?: "\\$interface", 1);        // 'Connector' bzw. 'Codec'
+        $ns       = substr($interface, 0, strrpos($interface, '\\') ?: 0) . '\\';
+
+        foreach (glob("$ordner/*$suffix.php") as $datei) {
+            $klasse = $ns . basename($datei, '.php');
+            if (!class_exists($klasse)) continue;                                    // lädt über den Autoloader
+            $r = new ReflectionClass($klasse);
+            if (!$r->isInstantiable() || !$r->implementsInterface($interface)) continue;
+            if (!$klasse::verfuegbar()) continue;                                    // Abhängigkeit fehlt
+            $gefunden[$klasse::typ()] = $klasse;
+        }
+
+        // atomar schreiben: erst Temp-Datei, dann umbenennen
+        $tmp = $cache . '.' . bin2hex(random_bytes(4)) . '.tmp';
+        file_put_contents($tmp, '<?php return ' . var_export($gefunden, true) . ';');
+        rename($tmp, $cache);
+
+        return $gefunden;
+    }
+}
+```
+
+> Die Skizze geht davon aus, dass Interface und Bausteine im selben Namespace liegen, z. B. `Gateway\Connector\Connector` und `Gateway\Connector\MongoConnector`.
+
+**Die Config hat Vorrang** vor der Automatik:
+
+| Einstellung | Wirkung |
+|---|---|
+| `bausteine.abschalten` | gefundene Bausteine nicht anbieten, z. B. `['xlsx']` |
+| `bausteine.ersetzen` | eigene Klasse statt der gefundenen, z. B. `['pdo' => App\MeinPdoConnector::class]` |
+| `bausteine.automatischSuchen` | `true`: Ordner bei Änderungen neu durchsuchen, `false`: nur den Cache nutzen |
+
+Welche Bausteine gefunden wurden und welche fehlen, zeigen `GET api.php/_hilfe/formate` und `php bin/config-pruefen.php`.
+
+### Wann sucht der PluginFinder?
+
+**PHP startet bei jedem Request neu.** Anders als bei Java gibt es bei XAMPP (`mod_php`) und PHP-FPM keine dauerhaft laufende Anwendung:
+
+```
+Request kommt → Skript startet → Config laden → … → Antwort → alles wird verworfen
+```
+
+Objekte und Variablen überleben den Request nicht. **Für PHP ist jeder Request ein Runtime-Start.** Deshalb gibt es den Cache.
+
+| | Java (z. B. Spring, Tomcat) | PHP (XAMPP, PHP-FPM) |
+|---|---|---|
+| Anwendung läuft | dauerhaft, startet einmal | pro Request neu |
+| Suche nach Bausteinen | einmal beim Start | bei jedem Request, wenn man nichts dagegen tut |
+| Neuer Baustein | Neustart nötig | nächster Request sieht ihn, ohne Neustart |
+| Zustand zwischen Requests | im Arbeitsspeicher | nur über Dateien, Datenbank, APCu, OPcache |
+
+**Ablauf über mehrere Requests** (Entwicklung, `automatischSuchen = true`):
+
+```
+Request 1   Cache fehlt              → Ordner durchsuchen, Cache schreiben    (einige ms)
+Request 2   Cache aktuell            → Cache-Datei lesen                      (Mikrosekunden)
+Request 3   Cache aktuell            → Cache-Datei lesen
+            ── MongoConnector.php wird in src/Connector/ gelegt ──
+Request 4   Ordner neuer als Cache   → neu durchsuchen, Cache schreiben       (einige ms)
+Request 5   Cache aktuell            → Cache-Datei lesen
+```
+
+**Innerhalb eines Requests** wird höchstens einmal gesucht, und zwar erst, wenn ein Baustein gebraucht wird (`$this->connectoren ??= …`). Bei `OPTIONS` oder `?_hilfe` mit Schema-Cache passiert es gar nicht.
+
+**Kosten:** Die Prüfung, ob sich der Ordner geändert hat, ist ein einziger `filemtime()`-Aufruf (Mikrosekunden). Die Cache-Datei ist ein PHP-Array, das OPcache kompiliert im Speicher hält.
+
+### Betriebsarten
+
+| | Entwicklung | Produktion |
+|---|---|---|
+| `bausteine.automatischSuchen` | `true` | `false` |
+| Ordner auf Änderungen prüfen | bei jedem Request (`filemtime`) | nie |
+| Neu suchen | automatisch, sobald eine Datei dazukommt oder entfernt wird | nur über `php bin/bausteine-aktualisieren.php` |
+| Vorteil | Datei ablegen, sofort aktiv | kein Aufwand zur Laufzeit, nichts wird unbemerkt aktiv |
+
+In Produktion werden neue Bausteine damit nur **bewusst** aktiviert und nicht schon dadurch, dass irgendwo eine Datei auftaucht. Fehlt der Cache dort ganz (z. B. nach dem ersten Kopieren), wird einmal gesucht und eine Warnung ins Log geschrieben.
+
+### Stolperfallen
+
+| Stolperfalle | Was passiert | Lösung |
+|---|---|---|
+| **Autoloading** | PHP kennt nur bereits geladene Klassen. `get_declared_classes()` findet einen neuen Baustein nicht, weil er noch nie benutzt wurde. | festen Ordner durchsuchen und Klassen gezielt mit `class_exists()` laden |
+| **`filemtime()` eines Ordners** | ändert sich nur, wenn Dateien **hinzukommen, gelöscht oder umbenannt** werden, nicht wenn eine Datei bearbeitet wird | für „welche Bausteine gibt es“ ist das richtig. Geänderter Code in einer Klasse wird normal geladen. Wer den `typ()` eines Bausteins ändert: `bausteine-aktualisieren.php` ausführen. |
+| **OPcache in Produktion** (`opcache.validate_timestamps = 0`) | geänderte PHP-Dateien, auch die Cache-Datei, werden erst nach einem Neustart von Apache bzw. PHP-FPM gesehen | `bausteine-aktualisieren.php` ruft `opcache_reset()` auf (wirkt nur, wenn es über den Webserver ausgelöst wird) bzw. weist auf den Neustart hin |
+| **Zwei Requests gleichzeitig** mit veraltetem Cache | beide suchen und schreiben die Cache-Datei. Ein dritter könnte eine halb geschriebene Datei lesen. | in eine Temp-Datei schreiben und per `rename()` ersetzen (atomar) |
+| **Beschreibbarer Baustein-Ordner** | jede Datei darin wird ausgeführt, also auch eingeschleuster Code | `src/Connector/` und `src/Codec/` dürfen für den Webserver **nicht** beschreibbar sein. In Produktion `automatischSuchen = false`. |
+| **Fehlende Abhängigkeit** (z. B. `ext-mongodb`) | ohne Prüfung würde schon das Laden der Klasse oder der erste Aufruf abstürzen | `verfuegbar()` prüft vorher. Der Baustein wird nicht angeboten, `config-pruefen.php` nennt den Grund. |
+| **Dateiname ≠ Klassenname** oder falscher Namespace | Autoloader findet die Klasse nicht, der Baustein wird stillschweigend übersprungen | Konvention einhalten. `config-pruefen.php` meldet Dateien im Ordner, die keinen gültigen Baustein enthalten. |
+| **Zwei Bausteine mit demselben `typ()`** | der zuletzt gefundene gewinnt, abhängig von der Reihenfolge im Dateisystem | doppelte Typen als Fehler melden. Bewusst ersetzen nur über `bausteine.ersetzen`. |
+| **Abstrakte Klassen, Interfaces, Hilfsklassen** im Ordner | würden fälschlich als Baustein gelten | `isInstantiable()` + `implementsInterface()` prüfen, Hilfsklassen ohne Endung `…Connector`/`…Codec` benennen |
+| **Passwort im Stacktrace** (PHP 8.1) | schlägt `new PDO(...)` fehl, kann das Passwort als Argument im Stacktrace stehen. `api.php` schreibt heute `error_log((string) $e)` mit Stacktrace. | Verbindungsfehler selbst abfangen und nur `getMessage()` loggen. Ab PHP 8.2 wird das Passwort-Argument automatisch ausgeblendet. |
+| **`cache/` nicht beschreibbar** | der Cache kann nicht geschrieben werden, bei jedem Request wird neu gesucht | Warnung ins Log. Mit `automatischSuchen = false` muss nur das CLI-Werkzeug schreiben dürfen. |
+
+### Sonderfälle
+
+| Fall | Verhalten |
+|---|---|
+| **PHP mit dauerhaftem Prozess** (FrankenPHP im Worker-Modus, RoadRunner, Swoole) | wie bei Java: Die Anwendung bleibt im Speicher, der PluginFinder sucht **einmal beim Start** des Workers. Ein neuer Baustein braucht einen Neustart des Workers. Der Cache schadet nicht, der Code funktioniert unverändert. Achtung: Dort bleiben auch Verbindungen über Requests hinweg offen. Der `ConnectionManager` muss sie dann am Ende jedes Requests verwerfen oder vor der Nutzung prüfen. |
+| **Kommandozeile** (`bin/…`) | jedes Werkzeug ist ein eigener Start, wie ein Request. `bin/bausteine-aktualisieren.php` sucht immer neu, unabhängig von `automatischSuchen`. |
+| **Tests** | dem `ConnectionManager` eine feste Liste übergeben statt des PluginFinders. Dann hängen Tests nicht vom Dateisystem ab. |
+| **Baustein in Config genutzt, aber nicht gefunden** | Prüfung beim Start schlägt fehl, `500` mit Grund im Log. Die API startet nicht mit halber Funktion. |
+| **Baustein gefunden, aber in keiner Verbindung genutzt** | kein Problem. Connectoren werden nur geladen, wenn eine Verbindung sie braucht. |
+
+### Abwägung: Automatik oder Liste in der Config?
+
+Auch mit Automatik braucht ein neues Backend die Klasse selbst und einen Eintrag in `verbindungen`. Gespart wird nur die Zeile, die den Typ registriert. Das gleiche Ziel (Kern bleibt unverändert) erreicht man auch mit einer festen Liste in der Config:
+
+```php
+'bausteine' => [
+    'connectoren' => ['pdo' => PdoConnector::class, 'mongo' => MongoConnector::class],
+],
+```
+
+| | Liste im Code (`match`) | Liste in der Config | Automatik (PluginFinder) |
+|---|---|---|---|
+| Kern ändern bei neuem Baustein | ja | nein | nein |
+| Config ändern | nein | eine Zeile | nein |
+| Man sieht sofort, was aktiv ist | ja | ja | über `_hilfe/formate` bzw. `config-pruefen.php` |
+| Aufwand | gering | gering | mittel |
+| Fehlerquellen | wenige | wenige | Ordner, Namensschema, Cache |
+
+**Entscheidung:** Automatik, weil derselbe Mechanismus auch für **Codecs** gilt. Dort kommen deutlich öfter neue Bausteine dazu als bei Datenbanken. Die Config hat aber immer Vorrang (`abschalten`, `ersetzen`), und in Produktion wird nur auf Befehl gesucht.
+
+---
+
 ## API-Dokumentation (Swagger)
 
 **Heute** beschreibt `openapi.yaml` jeden Pfad von Hand (`/fahrzeuge/{FID}`, `/fahrzeugtypen/{FTID}` …) und enthält noch das Anmeldeschema `BasicAuth`. `docs.html` zeigt sie mit Swagger UI an. Kommt eine Spalte oder Tabelle dazu, muss die Datei mitgepflegt werden, sonst stimmt die Doku nicht mehr.
@@ -697,13 +1002,15 @@ Die bestehende `api.php` wird **nicht neu geschrieben**, sondern Schritt für Sc
 | `zugangsdaten()`, `anmelden()`, `authDb()`, Prüfung in 6d | **entfällt** |
 | `ROLLEN` | **entfällt** (optional `aktionen` pro Ressource → `Http\ActionGuard`) |
 | `eingabeLesen()` (JSON/Formular) | `Codec\JsonCodec`, `Codec\FormCodec` |
-| `db()`, `spalten()`, `primaerschluessel()`, `primaerschluesselNamen()` | `Driver\PdoDriver::schema()` + `Schema\SchemaCache` |
+| `db()` (Verbindungsaufbau, Singleton) | `Connection\ConnectionManager` + `Connector\PdoConnector` |
+| `spalten()`, `primaerschluessel()`, `primaerschluesselNamen()` | `Driver\PdoDriver::schema()` + `Schema\SchemaCache` |
 | `holen()`, `liste()`, `anlegen()`, `aendern()`, `loeschen()` | `Driver\PdoDriver::get/find/create/update/delete` |
 | `namenAngleichen()`, `spalteFinden()`, `felderPruefen()`, `ohneSteuerfelder()` | `Mapping\FieldMapper` |
 | Verweis-Prüfung, `verwendungPruefen()` | `Mapping\ReferenceChecker` |
 | `MYSQL_FEHLER` | Fehlerübersetzung im `PdoDriver` |
 | Übersicht (6e) | `Http\Controller\OverviewController` |
 | – (neu) | `Help\HelpController`, `Help\HelpBuilder`, `Help\TextRenderer` |
+| – (neu) | `Plugin\PluginFinder` (findet Connectoren und Codecs) |
 
 ### Ziel-Ordnerstruktur
 
@@ -721,14 +1028,18 @@ MyEndPoint/
 │   ├─ hilfe.php
 │   ├─ config-pruefen.php
 │   ├─ schema-aktualisieren.php
+│   ├─ bausteine-aktualisieren.php
 │   ├─ klassen-erzeugen.php
 │   └─ umziehen.php
-├─ cache/                     ← erzeugtes Schema, nicht im Git
+├─ cache/                     ← erzeugt (schema.php, bausteine-*.php), nicht im Git
 ├─ src/
 │   ├─ Http/                  ← Kernel, Router, Request, Response, ErrorHandler, ActionGuard, Controller/
 │   ├─ Help/                  ← HelpController, HelpBuilder, TextRenderer
 │   ├─ Config/                ← ConfigLoader, ConfigValidator
-│   ├─ Codec/                 ← Codec, CodecRegistry, JsonCodec, FormCodec, CsvCodec, XmlCodec, …
+│   ├─ Plugin/                ← PluginFinder
+│   ├─ Connection/            ← ConnectionManager, VerbindungFehlgeschlagen
+│   ├─ Connector/             ← Connector + Bausteine (automatisch erkannt): PdoConnector, MongoConnector, FileConnector
+│   ├─ Codec/                 ← Codec, CodecRegistry + Bausteine (automatisch erkannt): JsonCodec, FormCodec, CsvCodec, …
 │   ├─ Driver/                ← Driver, DriverFactory, PdoDriver, MongoDriver, FileDriver
 │   ├─ Schema/                ← SchemaCache
 │   ├─ Mapping/               ← FieldMapper, TypeCaster, ReferenceChecker, Record
@@ -758,6 +1069,9 @@ Mit dem Wegfall der Anmeldung entfällt auch die bcrypt-Prüfung (`password_veri
 | JSON erzeugen | < 1 ms bis wenige ms | je nach Seitengröße |
 | XML / YAML / XLSX erzeugen 🔜 | deutlich mehr als JSON | XLSX am teuersten |
 | Hilfe-Befehle 🔜 | wie eine Übersicht | nutzen den Schema-Cache |
+| Verbindung aufbauen | 1–5 ms | einmal pro Request, nur wenn die Datenbank gebraucht wird |
+| PluginFinder: Cache lesen 🔜 | Mikrosekunden | ein `filemtime()` + OPcache. In Produktion ohne `filemtime()`. |
+| PluginFinder: neu suchen 🔜 | einige ms | nur wenn ein Baustein hinzukommt oder entfernt wird |
 
 | Ausbaustufe | Durchsatz auf 2 vCPU (grob) |
 |---|---|
@@ -874,6 +1188,7 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 - [ ] **`API_DEBUG` steht auf `true`.** Damit gehen SQL-Fehlermeldungen an den Client. Standard muss `false` sein, einschalten nur über `.env`.
 - [ ] **Datenbank-Benutzer `root` ohne Passwort.** Eigenen Benutzer anlegen, der in `fahrzeugverwaltung` nur `SELECT, INSERT, UPDATE, DELETE` darf.
 - [ ] **Zugangsdaten stehen im Code.** Sie gehören in `config/.env` und damit nicht ins Repo.
+- [ ] **Stacktraces im Log** (`error_log((string) $e)`): Unter PHP 8.1 kann bei einem fehlgeschlagenen Verbindungsaufbau das Datenbank-Passwort darin stehen. PHP 8.2+ verwenden und Verbindungsfehler im `ConnectionManager` abfangen.
 - [ ] **`Access-Control-Allow-Origin: *`.** Erlaubte Adressen in der Config festlegen. Ohne Anmeldung kann sonst jede Webseite, die ein Nutzer im internen Netz öffnet, per JavaScript Daten der API lesen und ändern.
 - [ ] **`.idea/` ist eingecheckt.** In die `.gitignore` aufnehmen.
 
@@ -888,6 +1203,9 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 | Ungewollte Änderungen an Stammdaten | `aktionen` pro Ressource |
 | Personendaten sichtbar | `versteckt` / `nurSchreiben` pro Feld |
 | Fremde Webseiten greifen zu | `cors.erlaubteUrspruenge` statt `*` |
+| Code einschleusen über den Baustein-Ordner | `src/Connector/`, `src/Codec/` für den Webserver nicht beschreibbar, in Produktion `automatischSuchen = false` |
+| Passwort im Log | Verbindungsfehler abfangen, nur die Meldung loggen, PHP 8.2+ |
+| Datenbank nicht erreichbar | `503` statt `500`, Details nur im Log |
 
 ---
 
@@ -904,6 +1222,7 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 | Verschachtelte Daten, eingebettete Verweise | jedes Format soll jede Zeile abbilden | IDs + zweiter Request |
 | SQL als Eingabe | Sicherheit | JSON, Formular, CSV, XML |
 | Joins über mehrere Ressourcen | folgt aus „nur flach“ | Datenbank-View als `quelle` |
+| Persistente Datenbankverbindungen | kein Vorteil, aber Risiko durch offene Transaktionen | eine Verbindung pro Request über den `ConnectionManager` |
 
 ---
 
@@ -930,11 +1249,15 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 - [ ] `API_DEBUG` standardmäßig aus, Zugangsdaten in `.env`
 - [ ] `composer.json` mit PSR-4-Autoloading
 - [ ] Konstanten → `config/gateway.php` + Prüfung beim Start
+- [ ] Mindestversion PHP 8.2 festlegen (oder Stacktraces bei Verbindungsfehlern nicht loggen)
 
 **Phase 2: Zerlegen in Klassen (Verhalten bleibt gleich)**
+- [ ] **`ConnectionManager` + `PdoConnector` ersetzen `db()`** (erster Schritt, der Rest von `api.php` läuft unverändert weiter). Verbindungsfehler → `503`.
 - [ ] `Response`, `ErrorHandler`, `Router`, `Request`
-- [ ] `PdoDriver` mit `schema()` + Schema-Cache
+- [ ] `PdoDriver` mit `schema()` + Schema-Cache, holt die Verbindung beim `ConnectionManager`
 - [ ] `FieldMapper`, `ReferenceChecker`
+- [ ] `PluginFinder` mit Cache, atomarem Schreiben und den Betriebsarten Entwicklung/Produktion
+- [ ] `Connector`- und `Codec`-Bausteine über den `PluginFinder` laden, `bausteine.abschalten` / `ersetzen`
 - [ ] `JsonCodec`, `FormCodec`
 - [ ] `api.php` startet nur noch den Kernel. Client und Swagger funktionieren unverändert.
 
@@ -949,8 +1272,10 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 
 **Phase 4: Weitere Backends und Werkzeuge**
 - [ ] `bin/hilfe.php` + `--hilfe` für alle Werkzeuge
-- [ ] `FileDriver`
-- [ ] `MongoDriver`, Verweise über Backend-Grenzen
+- [ ] `bin/bausteine-aktualisieren.php` (sucht immer neu, setzt OPcache zurück bzw. weist auf Neustart hin)
+- [ ] `config-pruefen.php` meldet doppelte `typ()`, ungültige Dateien im Baustein-Ordner und fehlende Abhängigkeiten
+- [ ] `FileDriver` + `FileConnector`
+- [ ] `MongoDriver` + `MongoConnector`, Verweise über Backend-Grenzen
 - [ ] `YamlCodec`, `XlsxCodec` (mit eigenem Größenlimit)
 - [ ] `/_convert`
 - [ ] `bin/klassen-erzeugen.php` (ersetzt `api_outerlayer/`)
