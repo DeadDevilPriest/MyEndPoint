@@ -6,7 +6,9 @@ Für Aufbau, Konfiguration und Entwicklung siehe [README.md](README.md).
 
 > **Legende:** ✅ = funktioniert heute · 🔜 = geplant für Version 2.0
 >
-> **Hinweis zum Übergang:** Die heutige `api.php` verlangt noch eine Anmeldung per Basic Auth. In Version 2.0 entfällt sie (siehe README, Roadmap Phase 1). Dieses Handbuch beschreibt den Stand **ohne Anmeldung**. Bis zur Umstellung bei `curl` zusätzlich `-u email:passwort` angeben.
+> **Hinweis zum Übergang:** Die heutige `api.php` verlangt noch eine Anmeldung per Basic Auth. In Version 2.0 entfällt sie (siehe README, Roadmap Phase 1). Dieses Handbuch beschreibt den Standard **ohne Anmeldung**. Bis zur Umstellung bei `curl` zusätzlich `-u email:passwort` angeben.
+>
+> **Optionaler SecurityCore 🔜:** Hat der Betreiber den SecurityCore eingeschaltet, schickst du bei jeder Anfrage deinen Kundenschlüssel mit. Wie das geht, steht in [Abschnitt 3](#3-zugang-mit-kundenschlüssel-nur-mit-securitycore). Alle anderen Abschnitte gelten unverändert, du siehst dann nur die Befehle, die deine Rolle benutzen darf.
 
 ---
 
@@ -14,17 +16,18 @@ Für Aufbau, Konfiguration und Entwicklung siehe [README.md](README.md).
 
 1. [Das Wichtigste in 1 Minute](#1-das-wichtigste-in-1-minute)
 2. [Hilfe-Befehle](#2-hilfe-befehle)
-3. [Adressen](#3-adressen)
-4. [Daten lesen](#4-daten-lesen)
-5. [Daten anlegen](#5-daten-anlegen)
-6. [Daten ändern](#6-daten-ändern)
-7. [Daten löschen](#7-daten-löschen)
-8. [Arbeiten mit HTML-Formularen](#8-arbeiten-mit-html-formularen)
-9. [Formate wählen](#9-formate-wählen)
-10. [Fehlermeldungen verstehen](#10-fehlermeldungen-verstehen)
-11. [Kommandozeilen-Werkzeuge](#11-kommandozeilen-werkzeuge)
-12. [Häufige Probleme](#12-häufige-probleme)
-13. [Kurzreferenz](#13-kurzreferenz)
+3. [Zugang mit Kundenschlüssel (nur mit SecurityCore)](#3-zugang-mit-kundenschlüssel-nur-mit-securitycore)
+4. [Adressen](#4-adressen)
+5. [Daten lesen](#5-daten-lesen)
+6. [Daten anlegen](#6-daten-anlegen)
+7. [Daten ändern](#7-daten-ändern)
+8. [Daten löschen](#8-daten-löschen)
+9. [Arbeiten mit HTML-Formularen](#9-arbeiten-mit-html-formularen)
+10. [Formate wählen](#10-formate-wählen)
+11. [Fehlermeldungen verstehen](#11-fehlermeldungen-verstehen)
+12. [Kommandozeilen-Werkzeuge](#12-kommandozeilen-werkzeuge)
+13. [Häufige Probleme](#13-häufige-probleme)
+14. [Kurzreferenz](#14-kurzreferenz)
 
 ---
 
@@ -181,9 +184,81 @@ Jede Fehlermeldung enthält einen Verweis auf die passende Hilfe:
 }
 ```
 
+### Hilfe mit SecurityCore 🔜
+
+Ist der SecurityCore aktiv, zeigt die Hilfe **nur die Befehle, die deine Rolle benutzen darf**. Ressourcen ohne Recht fehlen ganz, nicht erlaubte Aktionen stehen nicht in der Liste. Die Hilfe selbst braucht dann ebenfalls deinen Kundenschlüssel (siehe Abschnitt 3).
+
 ---
 
-## 3. Adressen
+## 3. Zugang mit Kundenschlüssel (nur mit SecurityCore)
+
+> 🔜 Dieser Abschnitt gilt **nur**, wenn der Betreiber den SecurityCore eingeschaltet hat. Standardmäßig ist er aus. Dann braucht die API keinen Schlüssel, und du kannst diesen Abschnitt überspringen.
+
+### Was du vom Betreiber bekommst
+
+| Angabe | Beispiel |
+|---|---|
+| deinen **Kundenschlüssel** (geheim halten!) | `7f3c9a…` (64 Zeichen) |
+| den **Namen des Headers**, in dem er mitgeschickt wird | `X-MyEndPoint-Key` |
+| ggf. ein **Präfix** vor dem Schlüssel | meist keins, manchmal `Bearer ` |
+
+Der Header-Name wird vom Betreiber festgelegt und kann bei jeder Installation anders heißen. Fehlt dir die Angabe, liefert `GET api.php/_hilfe` ohne Schlüssel eine `401`-Antwort, die den richtigen Header-Namen nennt.
+
+### Schlüssel mitschicken
+
+```bash
+curl -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/fahrzeuge
+curl -H "X-MyEndPoint-Key: 7f3c9a…" "http://localhost/MyEndPoint/api.php/_hilfe?format=text"
+```
+
+In JavaScript (wie in `client/index.php`):
+
+```js
+fetch('http://localhost/MyEndPoint/api.php/fahrzeuge', {
+    headers: { 'X-MyEndPoint-Key': schluessel }
+});
+```
+
+**Nie in die Adresse schreiben** (`?key=…`): Adressen landen in Logs und im Browser-Verlauf.
+
+### Mit Token arbeiten (falls aktiviert)
+
+Hat der Betreiber Tokens eingeschaltet, tauschst du deinen Schlüssel einmal gegen ein Token mit Ablaufzeit:
+
+```bash
+curl -X POST -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/_login
+```
+
+```json
+{ "token": "mep1.eyJr…", "gueltigBis": "2026-11-24T22:00:00+01:00" }
+```
+
+Danach schickst du im **selben Header** das Token statt des Schlüssels:
+
+```bash
+curl -H "X-MyEndPoint-Key: mep1.eyJr…" http://localhost/MyEndPoint/api.php/fahrzeuge
+```
+
+Ist das Token abgelaufen, antwortet die API mit `401`. Dann einfach erneut `POST /_login` aufrufen.
+
+### Was du siehst
+
+- Nur die Ressourcen und Befehle, die deine Rolle benutzen darf: in der Hilfe, in der Übersicht `GET api.php` und in der Swagger-Doku.
+- Eine Ressource, auf die du kein Recht hast, antwortet mit `404`, als gäbe es sie nicht.
+- Eine Aktion, die du auf einer sichtbaren Ressource nicht ausführen darf (z. B. `DELETE`), antwortet mit `403`.
+
+### Typische Antworten
+
+| Code | Bedeutung | Was tun? |
+|---|---|---|
+| `401` | Schlüssel bzw. Token fehlt, ist falsch oder abgelaufen | Header-Name und Schlüssel prüfen, ggf. neues Token holen |
+| `403` | Aktion für deine Rolle nicht erlaubt, oder Zugriff von deinem Rechner bzw. ohne HTTPS gesperrt | in `_hilfe` nachsehen, was du darfst, sonst Betreiber fragen |
+| `404` | Ressource existiert nicht **oder** ist für deine Rolle nicht sichtbar | `_hilfe` zeigt, welche Ressourcen du benutzen kannst |
+| `429` | zu viele Anfragen in kurzer Zeit (nur wenn ein Limit aktiv ist) | warten, so lange der Header `Retry-After` angibt |
+
+---
+
+## 4. Adressen
 
 Alle drei Schreibweisen funktionieren gleich:
 
@@ -204,7 +279,7 @@ Verfügbare Ressourcen: `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibsto
 
 ---
 
-## 4. Daten lesen
+## 5. Daten lesen
 
 ### Liste
 
@@ -275,7 +350,7 @@ Formel: `offset = (Seite − 1) × limit`
 
 ---
 
-## 5. Daten anlegen
+## 6. Daten anlegen
 
 ```bash
 curl -X POST \
@@ -302,7 +377,7 @@ curl -X POST -H "Content-Type: text/csv" \
 
 ---
 
-## 6. Daten ändern
+## 7. Daten ändern
 
 ```bash
 curl -X PATCH \
@@ -319,7 +394,7 @@ Antwort: der Datensatz mit dem neuen Stand.
 
 ---
 
-## 7. Daten löschen
+## 8. Daten löschen
 
 ```bash
 curl -X DELETE http://localhost/MyEndPoint/api.php/fahrzeuge/5
@@ -339,11 +414,11 @@ Die Antwort enthält den gelöschten Datensatz. So lässt er sich bei Bedarf neu
 
 Erst die abhängigen Datensätze ändern oder löschen, dann erneut versuchen.
 
-> **Achtung:** Ohne Anmeldung kann jeder, der die API erreicht, Daten löschen. Siehe README, Abschnitt *Sicherheit*.
+> **Achtung:** Ist der SecurityCore aus (Standard), kann jeder, der die API erreicht, Daten löschen. Siehe README, Abschnitt *Sicherheit*.
 
 ---
 
-## 8. Arbeiten mit HTML-Formularen
+## 9. Arbeiten mit HTML-Formularen
 
 HTML-Formulare kennen nur `GET` und `POST`. Die gewünschte Aktion steht deshalb in einem versteckten Feld:
 
@@ -378,7 +453,7 @@ Ein fertiges Beispiel ist der Client unter `client/index.php`.
 
 ---
 
-## 9. Formate wählen
+## 10. Formate wählen
 
 | Richtung | Wie | Standard |
 |---|---|---|
@@ -411,7 +486,7 @@ Die vollständige Liste liefert `GET api.php/_hilfe/formate`.
 
 ---
 
-## 10. Fehlermeldungen verstehen
+## 11. Fehlermeldungen verstehen
 
 Jeder Fehler hat einen Statuscode und eine Meldung auf Deutsch:
 
@@ -422,6 +497,8 @@ Jeder Fehler hat einen Statuscode und eine Meldung auf Deutsch:
 | Code | Bedeutung | Was tun? |
 |---|---|---|
 | `400` | Eingabe oder Parameter ungültig | `details` lesen: Pflichtfeld fehlt, unbekanntes Feld, falscher Wert, Verweis ins Leere |
+| `401` | nur mit SecurityCore 🔜: Schlüssel/Token fehlt, falsch oder abgelaufen | siehe [Abschnitt 3](#3-zugang-mit-kundenschlüssel-nur-mit-securitycore) |
+| `403` | nur mit SecurityCore 🔜: Aktion für deine Rolle nicht erlaubt | `_hilfe` zeigt, was du darfst |
 | `404` | Ressource oder ID gibt es nicht | Schreibweise prüfen, `GET api.php` zeigt alle Ressourcen |
 | `405` | Aktion passt nicht zur Adresse | z. B. `DELETE` ohne ID, oder `POST` mit ID |
 | `406` | Ausgabeformat nicht verfügbar 🔜 | `_hilfe/formate` |
@@ -435,7 +512,7 @@ Die vollständige Liste liefert `GET api.php/_hilfe/fehler`.
 
 ---
 
-## 11. Kommandozeilen-Werkzeuge
+## 12. Kommandozeilen-Werkzeuge
 
 🔜 Für Administratoren gibt es Werkzeuge im Ordner `bin/`. Jedes zeigt mit `--hilfe` (oder `--help`, `-h`) seine Anleitung.
 
@@ -448,7 +525,8 @@ MyEndPoint – Werkzeuge
 
   php bin/config-pruefen.php          Konfiguration prüfen
   php bin/schema-aktualisieren.php    Datenbank-Schema neu einlesen (nach Tabellenänderungen)
-  php bin/bausteine-aktualisieren.php Bausteine (Connectoren, Codecs) neu suchen
+  php bin/bausteine-aktualisieren.php Bausteine (Connectoren, Codecs, Wächter) neu suchen
+  php bin/schluessel-erzeugen.php     Kundenschlüssel für den SecurityCore erzeugen
   php bin/klassen-erzeugen.php        PHP-Klassen aus den Tabellen erzeugen
   php bin/umziehen.php                Daten einer Ressource in ein anderes Backend kopieren
 
@@ -480,13 +558,14 @@ BEISPIEL
 |---|---|
 | `config-pruefen.php` | nach jeder Änderung an `config/gateway.php` |
 | `schema-aktualisieren.php` | nach neuen Tabellen oder Spalten in der Datenbank |
-| `bausteine-aktualisieren.php` | nach einem neuen oder entfernten Connector bzw. Codec (in Produktion Pflicht, in der Entwicklung automatisch) |
+| `bausteine-aktualisieren.php` | nach einem neuen oder entfernten Connector, Codec oder Wächter (in Produktion Pflicht, in der Entwicklung automatisch) |
+| `schluessel-erzeugen.php` | einen neuen Kunden für den SecurityCore anlegen. Zeigt den Schlüssel **einmal** an und gibt die Zeile mit dem Hash für die `.env` aus. |
 | `klassen-erzeugen.php` | wenn PHP-Code mit typisierten Objekten arbeiten soll |
 | `umziehen.php` | beim Wechsel einer Ressource auf ein anderes Backend |
 
 ---
 
-## 12. Häufige Probleme
+## 13. Häufige Probleme
 
 | Problem | Ursache | Lösung |
 |---|---|---|
@@ -501,10 +580,13 @@ BEISPIEL
 | Umlaute kaputt in Excel | CSV ohne BOM geöffnet | 🔜 CSV aus der API hat ein BOM, oder in Excel über „Daten → Aus Text/CSV“ öffnen |
 | JavaScript-Fehler „CORS“ | Aufruf von einer anderen Adresse | Adresse in `cors.erlaubteUrspruenge` eintragen 🔜 |
 | Antwort ist HTML statt JSON | PHP-Fehler vor der API | Server-Log prüfen (XAMPP: `apache/logs/error.log`) |
+| `401` trotz Schlüssel 🔜 | falscher Header-Name, Präfix fehlt, Token abgelaufen oder Kunde gesperrt | Header-Name aus der `401`-Antwort übernehmen, neues Token holen, Betreiber fragen |
+| Im Browser kommt der Schlüssel-Header nicht an 🔜 | CORS: der Header ist für diese Seite nicht freigegeben | Seite in `cors.erlaubteUrspruenge` eintragen (Betreiber) |
+| API startet nach dem Einschalten des SecurityCores nicht 🔜 | Einstellung unvollständig (absichtlich, fail closed) | `php bin/config-pruefen.php` nennt den fehlenden Wert |
 
 ---
 
-## 13. Kurzreferenz
+## 14. Kurzreferenz
 
 ```text
 HILFE
@@ -535,7 +617,14 @@ FORMATE
   Accept:       application/json | text/csv 🔜 | application/xml 🔜
   ?format=json|csv|xml|yaml|xlsx|sql|text                             🔜
 
+ZUGANG (nur wenn der SecurityCore aktiv ist)                          🔜
+  <Header-Name>: <Kundenschlüssel>     bei jeder Anfrage, Name vom Betreiber
+  POST api.php/_login                  Schlüssel → Token (falls aktiviert)
+  <Header-Name>: mep1.…                Token statt Schlüssel
+  401 = Schlüssel/Token fehlt   403 = nicht erlaubt   404 = nicht sichtbar
+
 WERKZEUGE                                                             🔜
   php bin/hilfe.php
   php bin/<werkzeug>.php --hilfe
+  php bin/schluessel-erzeugen.php <kunde>     (Betreiber, SecurityCore)
 ```

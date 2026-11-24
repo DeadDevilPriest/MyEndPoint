@@ -2,7 +2,7 @@
 
 Eine REST-API in PHP, die jede freigegebene Datenbanktabelle per HTTP lesbar, anlegbar, änderbar und löschbar macht. Felder, Pflichtfelder und Verweise liest die API **selbst aus der Datenbank**. Eine neue Spalte braucht keine Codeänderung.
 
-Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehrere Ein- und Ausgabeformate (JSON, Formular, CSV, XML …), mehrere Speicher-Backends (MariaDB, MongoDB, Dateien), eine zentrale Konfiguration und **eingebaute Hilfe-Befehle**.
+Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehrere Ein- und Ausgabeformate (JSON, Formular, CSV, XML …), mehrere Speicher-Backends (MariaDB, MongoDB, Dateien), eine zentrale Konfiguration, **eingebaute Hilfe-Befehle** und einen **optionalen SecurityCore**, der standardmäßig ausgeschaltet ist.
 
 > **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON, noch mit Anmeldung). Alles, was mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt. Den Fortschritt zeigt die [Roadmap](#roadmap).
 >
@@ -24,6 +24,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 - [Datenmodell und Verweise](#datenmodell-und-verweise)
 - [Speicher-Backends (Treiber)](#speicher-backends-treiber)
 - [Verbindungen und Bausteine](#verbindungen-und-bausteine)
+- [SecurityCore (optional)](#securitycore-optional)
 - [API-Dokumentation (Swagger)](#api-dokumentation-swagger)
 - [Architektur und Umbau](#architektur-und-umbau)
 - [Serverauslastung und Anforderungen](#serverauslastung-und-anforderungen)
@@ -37,9 +38,14 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 
 | Thema | Entscheidung | Begründung |
 |---|---|---|
-| Anmeldung | **keine** | nicht benötigt, die API läuft im geschützten Netz (siehe [Sicherheit](#sicherheit)) |
-| Rollen | **keine** | ohne Anmeldung gibt es niemanden, dem eine Rolle zugeordnet wäre |
-| Request-Limit (Anfragen pro Zeit) | **vorerst keins** | kann später ergänzt werden |
+| Zugriffskontrolle | **optionaler SecurityCore, standardmäßig aus** (siehe [SecurityCore](#securitycore-optional)) | ohne Konfiguration offen wie bisher geplant, bei Bedarf pro Kunde absicherbar |
+| Grundschutz | **immer aktiv, nicht abschaltbar** (Prepared Statements, Whitelist, XXE aus, Größenlimit …) | kostet praktisch nichts und schützt vor kaputten oder böswilligen Eingaben, egal wer sie schickt |
+| Geltungsbereich | **Variante C: global + pro Ressource zusätzlich**. Ressourcen können strenger sein, aber nie offener als global. | neue Ressourcen sind automatisch mindestens global geschützt |
+| Identität | **Kundenschlüssel in einem frei benennbaren HTTP-Header**, optional gegen ein **Token** tauschbar (`POST /_login`) | kein Benutzername/Passwort nötig, die Rolle kommt immer aus der Config und nie vom Client |
+| Anmeldung mit Benutzername/Passwort (`basic`) | **entfällt** | durch Kundenschlüssel und Token ersetzt |
+| Rollen | **nur mit SecurityCore**, Rechte pro Ressource (`crud`) | ohne SecurityCore gibt es niemanden, dem eine Rolle zugeordnet wäre |
+| Hilfe bei aktiver Sicherheit | **zeigt nur die Befehle, die die Rolle benutzen darf** | jeder Kunde sieht seine eigene, passende Doku, keine Sicherheitsdetails |
+| Request-Limit (Anfragen pro Zeit) | **vorerst keins**, später als optionaler Wächter | kann ergänzt werden, ohne den Kern zu ändern |
 | VMs / Container | **nicht Teil des Projekts** | die API läuft z. B. in XAMPP, wie sie bereitgestellt wird, ist offen |
 | Hilfe | **eingebaute Hilfe-Befehle** (`_hilfe`) + [Benutzerhandbuch](HANDBUCH.md) | die API erklärt sich selbst, immer passend zur Datenbank |
 | Datenverarbeitung | **alles in Arrays**, kein Streaming | einfache Schnittstellen, leicht zu testen |
@@ -107,8 +113,10 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | HTML-Formulare (`_method`, `operation`, ID als Feld) | ✅ | ✅ |
 | Übersicht `GET api.php` | ✅ | ✅ |
 | **Hilfe-Befehle** (`_hilfe`, `?_hilfe`, `--hilfe`) | ❌ | 🔜 |
-| Anmeldung (Basic Auth) | ✅ | **entfällt** |
-| Rollen | ✅ (pro HTTP-Methode) | **entfällt** |
+| Anmeldung (Basic Auth, Pflicht) | ✅ | **entfällt** |
+| SecurityCore (optional, Standard: aus) | ❌ | 🔜 Kundenschlüssel im Header, Token, IP-Freigabe … |
+| Rollen | ✅ (pro HTTP-Methode, Pflicht) | 🔜 nur mit SecurityCore, pro Kunde und Ressource |
+| Hilfe gefiltert nach Rolle | ❌ | 🔜 nur mit SecurityCore |
 | Aktionen pro Ressource einschränken (z. B. nur lesen) | ❌ | 🔜 optional |
 | Eingabe JSON / Formular | ✅ | ✅ |
 | Eingabe CSV, XML, YAML | ❌ | 🔜 |
@@ -148,9 +156,10 @@ Ein neues Format braucht genau **einen** Codec, ein neues Backend genau **einen*
 | **Treiber** | neutrale Zeilen ↔ Speicher, liefert das Schema | Formate |
 | **FieldMapper** | Namen angleichen, Ausnahmen aus der Config, Prüfung, Verweise | Formate, Speicherart |
 | **ConnectionManager** | Verbindungen aufbauen, erst bei Bedarf, eine pro Request | Abfragen, Formate, HTTP |
-| **PluginFinder** | neue Codecs und Connectoren automatisch finden | was die Bausteine tun |
+| **PluginFinder** | neue Codecs, Connectoren und Wächter automatisch finden | was die Bausteine tun |
+| **SecurityCore** 🔜 | optional: wer anfragt (Kunde, Rolle) und ob er darf | Formate, Speicherart |
 
-Details zu den beiden letzten: [Verbindungen und Bausteine](#verbindungen-und-bausteine).
+Details: [Verbindungen und Bausteine](#verbindungen-und-bausteine), [SecurityCore](#securitycore-optional).
 
 ### Die Datenbank ist das Template
 
@@ -169,17 +178,22 @@ Die Konfiguration muss deshalb nur Ausnahmen enthalten: versteckte Felder, Umben
 ```
  1. Request annehmen          Größe prüfen                         → 413
  2. Router                    api.php/<ressource>/<id?>             → 404
- 3. Hilfe?                    _hilfe im Pfad oder ?_hilfe           → Hilfe ausgeben, fertig
- 4. Methode bestimmen         echte Methode oder _method/Override   → 400
- 5. Aktion erlaubt?           optionale Einschränkung pro Ressource → 405
- 6. Codec (Content-Type)      Body → neutrale Zeilen                → 400 / 415
- 7. FieldMapper               Namen angleichen, Pflichtfelder,
+ 3. Methode bestimmen         echte Methode oder _method/Override   → 400
+ 4. SecurityCore              nur wenn global oder für die Ressource
+                              aktiv: Kunde erkennen, Rolle prüfen   → 401 / 403 / 404
+ 5. Hilfe?                    _hilfe im Pfad oder ?_hilfe           → Hilfe ausgeben
+                              (bei aktiver Sicherheit nach Rolle gefiltert), fertig
+ 6. Aktion erlaubt?           optionale Einschränkung pro Ressource → 405
+ 7. Codec (Content-Type)      Body → neutrale Zeilen                → 400 / 415
+ 8. FieldMapper               Namen angleichen, Pflichtfelder,
                               Typen, Verweise prüfen                → 400
- 8. Treiber                   lesen / schreiben                     → 404 / 409
- 9. FieldMapper (zurück)      versteckte Felder entfernen
-10. Codec (Accept)            neutrale Zeilen → Ausgabeformat       → 406
-11. Antwort
+ 9. Treiber                   lesen / schreiben                     → 404 / 409
+10. FieldMapper (zurück)      versteckte Felder entfernen
+11. Codec (Accept)            neutrale Zeilen → Ausgabeformat       → 406
+12. Antwort
 ```
+
+Ist der SecurityCore aus, wird Schritt 4 komplett übersprungen. Es wird dann keine einzige Sicherheitsklasse geladen.
 
 ---
 
@@ -207,8 +221,9 @@ http://localhost/MyEndPoint/fahrzeuge/5
 | `POST` | `api.php/<ressource>` | anlegen → `201` + `Location`-Header |
 | `PUT` / `PATCH` | `api.php/<ressource>/<id>` | ändern (nur mitgeschickte Felder) |
 | `DELETE` | `api.php/<ressource>/<id>` | löschen |
-| `OPTIONS` | beliebig | CORS-Vorabanfrage → `204` |
+| `OPTIONS` | beliebig | CORS-Vorabanfrage → `204` (immer offen) |
 | `GET` | `api.php/_hilfe[/…]` | Hilfe-Befehle 🔜 (siehe [Hilfe-Befehle](#hilfe-befehle)) |
+| `POST` | `api.php/_login` | Kundenschlüssel gegen ein Token tauschen 🔜, nur wenn der Wächter `token` aktiv ist (siehe [SecurityCore](#securitycore-optional)) |
 | `GET` | `api.php/_openapi` | OpenAPI-Beschreibung, automatisch erzeugt 🔜 |
 | `POST` | `api.php/_convert` | Format umwandeln, nichts speichern 🔜 |
 
@@ -300,16 +315,19 @@ Fehler kommen immer als JSON, auch wenn ein anderes Ausgabeformat angefragt wurd
 | Status | Wann |
 |---|---|
 | `400` | ungültige Eingabe oder Parameter, Pflichtfeld fehlt, Verweis zeigt ins Leere |
-| `404` | Ressource oder Datensatz unbekannt |
+| `401` | nur mit SecurityCore 🔜: Kundenschlüssel bzw. Token fehlt, ist falsch oder abgelaufen |
+| `403` | nur mit SecurityCore 🔜: Ressource ist für die Rolle sichtbar, die Aktion aber nicht erlaubt, oder ein Wächter wie `ip` / `https` lehnt ab |
+| `404` | Ressource oder Datensatz unbekannt. Mit SecurityCore auch: Ressource, auf die die Rolle **gar kein** Recht hat. |
 | `405` | Methode passt nicht zum Pfad, oder Aktion für diese Ressource abgeschaltet |
 | `406` | Ausgabeformat nicht verfügbar 🔜 |
 | `409` | doppelter Wert, oder Datensatz wird noch verwendet |
 | `413` | Anfrage zu groß 🔜 |
 | `415` | Eingabeformat nicht verfügbar 🔜 |
+| `429` | nur mit Wächter `requestLimit` 🔜: zu viele Anfragen, mit `Retry-After`-Header |
 | `500` | interner Fehler, oder Konfiguration ungültig |
 | `503` | Datenbank bzw. Backend nicht erreichbar 🔜 (heute `500`) |
 
-`401` und `403` gibt es nicht mehr, sobald die Anmeldung entfernt ist.
+Ohne SecurityCore kommen `401`, `403` und `429` nicht vor. Die heutige `api.php` nutzt `401`/`403` noch für ihre Pflicht-Anmeldung, die entfällt.
 
 Datenbankfehler, die der Client verursacht hat, werden übersetzt (heute `MYSQL_FEHLER`, künftig im jeweiligen Treiber):
 
@@ -347,8 +365,19 @@ Die API erklärt sich selbst. Die Hilfe wird aus **Schema und Config** erzeugt u
 - **Ausgabe:** JSON (Standard, für Programme) oder lesbarer Text mit `?format=text` bzw. `Accept: text/plain`. Browser bekommen automatisch Text.
 - **Fehlermeldungen** verweisen im Feld `hilfe` auf die passende Hilfeseite.
 - `?_hilfe` passt zur bestehenden Regel, dass Parameter mit `_` Steuerfelder sind.
+- Die Hilfe zeigt **Befehle, keine Sicherheitsdetails**. Ob und welche Wächter aktiv sind, steht nie in der Antwort.
 
-Beispiel (Text):
+### Hilfe und SecurityCore
+
+| SecurityCore | Was `_hilfe`, die Übersicht `GET api.php` und `/_openapi` zeigen |
+|---|---|
+| **aus** (Standard) | alle Befehle für alle Ressourcen, ohne Header |
+| **an** (global oder für eine Ressource) | die Hilfe ist genauso geschützt wie der Rest. Gezeigt werden **nur die Befehle, die die Rolle des Kunden benutzen darf**. Ressourcen ohne Recht tauchen gar nicht auf, nicht erlaubte Aktionen fehlen in der Liste. |
+| **an, aber kein / falscher Schlüssel** | `401` mit einem kurzen Hinweis, wie man sich ausweist (Name des konfigurierten Headers), aber ohne Ressourcen oder Felder |
+
+Beispiel: Für einen Kunden mit der Rolle `leser` steht bei `fahrzeuge` nur `GET`, und `fahrzeughalter` fehlt ganz. Für die Rolle `werkstatt` stehen bei `fahrzeuge` zusätzlich `POST` und `PATCH`.
+
+Beispiel (Text, SecurityCore aus):
 
 ```text
 $ curl "http://localhost/MyEndPoint/api.php/_hilfe/fahrzeuge?format=text"
@@ -393,7 +422,7 @@ Alternativ werden Kommentare aus der Datenbank übernommen (`COMMENT` an Tabelle
 
 ### Kommandozeilen-Hilfe
 
-Jedes Werkzeug in `bin/` zeigt mit `--hilfe` (oder `--help`, `-h`) Aufruf, Optionen und ein Beispiel. `php bin/hilfe.php` listet alle Werkzeuge auf. Siehe [Benutzerhandbuch, Abschnitt 11](HANDBUCH.md#11-kommandozeilen-werkzeuge).
+Jedes Werkzeug in `bin/` zeigt mit `--hilfe` (oder `--help`, `-h`) Aufruf, Optionen und ein Beispiel. `php bin/hilfe.php` listet alle Werkzeuge auf. Siehe [Benutzerhandbuch, Abschnitt 12](HANDBUCH.md#12-kommandozeilen-werkzeuge).
 
 ---
 
@@ -408,8 +437,8 @@ Jedes Werkzeug in `bin/` zeigt mit `--hilfe` (oder `--help`, `-h`) Aufruf, Optio
 | `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | Seitengröße 100 / höchstens 1000 | → `grenzen` |
 | `API_DEBUG` | genaue Fehlermeldungen in der Antwort | → `debug` (Standard: aus) |
 | `MYSQL_FEHLER` | MySQL-Fehlernummer → Status + Meldung | → in den PdoDriver |
-| `AUTH_DSN`, `AUTH_USER`, `AUTH_PASS`, `TBL_BENUTZER` | Konten-Datenbank | **entfällt** |
-| `ROLLEN` | Rolle → erlaubte HTTP-Methoden | **entfällt** |
+| `AUTH_DSN`, `AUTH_USER`, `AUTH_PASS`, `TBL_BENUTZER` | Konten-Datenbank | **entfällt** (Kunden stehen in `sicherheit.kunden`) |
+| `ROLLEN` | Rolle → erlaubte HTTP-Methoden | → optional `sicherheit.rollen`, pro Ressource |
 
 ### 🔜 Künftig: `config/gateway.php` + `.env`
 
@@ -429,7 +458,14 @@ return [
         'limitMaximum'    => 1000,
     ],
 
-    // Bausteine (Connectoren, Codecs) – siehe „Verbindungen und Bausteine“
+    // Optionaler SecurityCore – siehe „SecurityCore (optional)“
+    'sicherheit' => [
+        'aktiv'    => false,                // Standard: aus, kein Wächter wird geladen
+        'waechter' => [],                   // z. B. ['ip', 'kundenschluessel', 'rollen']
+        // … Einstellungen der Wächter, siehe Abschnitt SecurityCore
+    ],
+
+    // Bausteine (Connectoren, Codecs, Wächter) – siehe „Verbindungen und Bausteine“
     'bausteine' => [
         'automatischSuchen' => getenv('API_DEBUG') === '1',   // Entwicklung: ja, Produktion: nein
         'abschalten' => ['xlsx'],                              // gefunden, aber nicht anbieten
@@ -471,11 +507,12 @@ return [
             'aktionen'   => 'r',
         ],
 
-        // Personendaten: einzelne Felder verbergen (optional)
+        // Personendaten: einzelne Felder verbergen und zusätzlich absichern (optional)
         'fahrzeughalter' => [
             'verbindung' => 'fahrzeuge',
             'quelle'     => 'fahrzeughalter',
             'felder'     => ['Strasse' => ['versteckt' => true]],
+            'sicherheit' => ['kundenschluessel', 'rollen'],   // gilt auch, wenn global aus
         ],
 
         // MongoDB hat kein Schema → Felder vollständig angeben
@@ -511,7 +548,8 @@ API_DEBUG=0
 | `verbindung` | ja | Name aus `verbindungen` |
 | `quelle` | ja | Tabelle, Collection oder Dateiname |
 | `felder` | bei MongoDB | Ausnahmen bzw. vollständige Feldliste (siehe unten) |
-| `aktionen` | nein | erlaubte Aktionen als Buchstaben: `c` anlegen, `r` lesen, `u` ändern, `d` löschen. Standard: `crud` (alles). Gilt für **alle** Aufrufer, es ist keine Rolle. Nicht erlaubt → `405`. |
+| `aktionen` | nein | erlaubte Aktionen als Buchstaben: `c` anlegen, `r` lesen, `u` ändern, `d` löschen. Standard: `crud` (alles). Gilt für **alle** Aufrufer, es ist keine Rolle. Nicht erlaubt → `405`. Mit SecurityCore die Obergrenze: Auch eine Rolle mit `crud` darf nicht mehr, als `aktionen` erlaubt. |
+| `sicherheit` | nein | zusätzliche Wächter nur für diese Ressource, z. B. `['kundenschluessel', 'rollen']`. Werden zu den globalen **hinzugefügt**, können sie aber nie entfernen (Variante C). Gilt auch, wenn der SecurityCore global aus ist. |
 | `beschreibung` | nein | Text für die Hilfe-Befehle und Swagger |
 | `verweise` | nein | `Feld => Ressource`, für Verweise ohne Fremdschlüssel |
 | `filterbar` | nein | nur diese Felder als Filter erlauben (Standard: alle sichtbaren) |
@@ -540,6 +578,7 @@ Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 - Jede Ressource verweist auf eine existierende Verbindung.
 - Für jeden `treiber` in `verbindungen` wurde ein Connector-Baustein gefunden **und** ist verfügbar. Sonst kommt eine klare Meldung, z. B. „Treiber `mongo` ist konfiguriert, aber nicht verfügbar: PHP-Extension `mongodb` fehlt“.
 - Klassen in `bausteine.ersetzen` existieren und setzen das passende Interface um.
+- Ist der SecurityCore global oder für eine Ressource aktiv: Alle genannten Wächter wurden gefunden, ihre Abhängigkeiten sind erfüllt (z. B. `rollen` braucht eine Identität), und ihre Einstellungen sind vollständig (Header-Name, Schlüssel-Hashes, Token-Secret ≥ 32 Zeichen). **Sonst startet die API nicht** (fail closed).
 - `aktionen` besteht nur aus `c`, `r`, `u`, `d`.
 - Verweise zeigen auf existierende Ressourcen.
 - Kein Ressourcenname beginnt mit `_` (reserviert für `_hilfe`, `_openapi` …).
@@ -812,6 +851,7 @@ $fahrzeug = $treiber->fuer('fahrzeuge')->get('5');
 |---|---|---|---|
 | `src/Connector/` | `Connector` | `MongoConnector.php` | `'treiber' => 'mongo'` ist in der Config nutzbar |
 | `src/Codec/` | `Codec` | `NdjsonCodec.php` | `Content-Type: application/x-ndjson` wird verstanden |
+| `src/Security/` | `Waechter` | `IpWaechter.php` | `'ip'` ist im SecurityCore nutzbar (siehe [SecurityCore](#securitycore-optional)) |
 
 **Konvention:** Dateiname = Klassenname, Endung `…Connector.php` bzw. `…Codec.php`, Namespace passend zum Ordner (PSR-4).
 
@@ -971,6 +1011,236 @@ Auch mit Automatik braucht ein neues Backend die Klasse selbst und einen Eintrag
 
 ---
 
+## SecurityCore (optional)
+
+> 🔜 Geplant. **Standardmäßig ausgeschaltet.** Ohne Konfiguration verhält sich die API so, als gäbe es den SecurityCore nicht: kein Header wird ausgewertet, keine Sicherheitsklasse wird geladen.
+
+### Zwei Ebenen
+
+| Ebene | Was | Abschaltbar? |
+|---|---|---|
+| **Grundschutz** | Prepared Statements, Whitelist der Ressourcen, Spaltennamen nur aus dem Schema, XXE aus, CSV-Injection maskieren, Größenlimit, Debug standardmäßig aus, keine Passwörter im Log | **nein**. Kostet praktisch nichts und schützt die API vor kaputten oder böswilligen Eingaben, egal wer sie schickt. |
+| **SecurityCore** | Zugriffskontrolle: IP-Freigabe, Kundenschlüssel, Token, Rollen, Request-Limit, Audit-Log … | **ja, standardmäßig aus** |
+
+### Wächter als Bausteine
+
+Jede Sicherheitsfunktion ist ein **Wächter**: eine kleine Klasse in `src/Security/`, die der [PluginFinder](#bausteine-automatisch-erkennen-pluginfinder) wie Connectoren und Codecs automatisch findet.
+
+```php
+interface Waechter
+{
+    public static function typ(): string;            // 'ip', 'kundenschluessel', 'token', 'rollen' …
+    public static function verfuegbar(): bool;
+    public static function braucht(): array;         // Abhängigkeiten, z. B. ['identitaet'] bei 'rollen'
+    public function pruefen(Request $request, Kontext $kontext): void;   // wirft bei Ablehnung
+}
+```
+
+Der `Kontext` trägt den **`Principal`**: wer anfragt. Ohne SecurityCore ist das immer „anonym“. Mit Kundenschlüssel oder Token ist es der Kundenname, und daraus ergibt sich die Rolle.
+
+| Wächter | Schützt | braucht | Kosten pro Request |
+|---|---|---|---|
+| `ip` | nur bestimmte Rechner oder Netze | – | Mikrosekunden |
+| `https` | lehnt unverschlüsselte Requests ab | – | Mikrosekunden |
+| `nurLesen` | schaltet alle Schreibzugriffe ab, z. B. für eine Demo | – | Mikrosekunden |
+| `kundenschluessel` | nur Kunden mit gültigem Schlüssel im konfigurierten Header | – (liefert die Identität) | Mikrosekunden (SHA-256) |
+| `token` | Schlüssel einmal gegen ein Token tauschen, danach nur noch Token | `kundenschluessel` | Mikrosekunden (HMAC) |
+| `rollen` | Rechte pro Kunde und Ressource (`crud`), filtert auch die Hilfe | eine Identität | Mikrosekunden |
+| `requestLimit` | Anfragen pro Zeit (später, vorerst nicht benötigt) | – (optional Identität) | Mikrosekunden (APCu) |
+| `audit` | protokolliert Schreibzugriffe mit Kunde, Zeit, Ressource, ID | sinnvoll mit Identität | ~1 ms |
+
+### Geltungsbereich: Variante C (global + pro Ressource zusätzlich)
+
+```php
+'sicherheit' => [
+    'aktiv'    => true,
+    'waechter' => ['ip'],                                    // gilt für alle Ressourcen
+],
+'ressourcen' => [
+    'fahrzeughalter' => [/* … */, 'sicherheit' => ['kundenschluessel', 'rollen']],   // zusätzlich
+],
+```
+
+Die Wächter für einen Request ergeben sich so:
+
+```
+wirksame Wächter = (global aktiv ? globale Wächter : keine)  ∪  Wächter der Ressource
+```
+
+| Regel | Bedeutung |
+|---|---|
+| **Nur hinzufügen, nie entfernen** | Eine Ressource kann strenger sein als global, aber nie offener. Eine Ressource zu „vergessen“ öffnet sie nicht. |
+| **Neue Ressourcen** | bekommen automatisch den globalen Schutz |
+| **Global aus, Ressource mit Wächtern** | nur diese Ressource ist geschützt, alle anderen bleiben offen |
+| **Global aus, keine Ressource mit Wächtern** | SecurityCore komplett aus (Standard) |
+
+| Variante | Vorteile | Nachteile |
+|---|---|---|
+| A: nur global | ein Schalter, nichts vergessen | keine Ausnahmen, alles gleich streng |
+| B: nur pro Ressource | sehr flexibel | neue Ressourcen sind offen, bis man sie einträgt |
+| **C: kombiniert** (gewählt) | so sicher wie A, fast so flexibel wie B | man muss beide Ebenen kennen |
+
+### Kunden und Kundenschlüssel
+
+Jeder Kunde, der den SecurityCore nutzt, bekommt einen eigenen **geheimen Schlüssel**. Den schickt er in einem **HTTP-Header, dessen Name frei wählbar** ist.
+
+```php
+'sicherheit' => [
+    'aktiv'    => true,
+    'waechter' => ['kundenschluessel', 'rollen'],
+
+    'header' => [
+        'name'    => 'X-MyEndPoint-Key',     // frei wählbar, z. B. 'X-Kunde'
+        'praefix' => '',                     // optional, z. B. 'Bearer ' (dann 'name' => 'Authorization')
+    ],
+
+    'kunden' => [                            // Schlüssel nur als SHA-256-Hash, in der .env
+        'autohaus-mueller' => ['schluessel' => getenv('KEY_MUELLER_HASH'), 'rolle' => 'leser'],
+        'werkstatt-nord'   => ['schluessel' => getenv('KEY_NORD_HASH'),    'rolle' => 'werkstatt'],
+        'verwaltung'       => ['schluessel' => getenv('KEY_ADMIN_HASH'),   'rolle' => 'admin'],
+        'alter-kunde'      => ['schluessel' => getenv('KEY_ALT_HASH'),     'rolle' => 'leser', 'aktiv' => false],
+    ],
+],
+```
+
+```bash
+curl -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/fahrzeuge
+```
+
+- **Im Header steht der Schlüssel, nie die Rolle.** Die Rolle steht in der Config. Der Header beweist nur, welcher Kunde anfragt. Könnte der Client seine Rolle selbst schicken, würde jeder „admin“ hineinschreiben.
+- **Gespeichert wird nur der Hash.** Weil die Schlüssel lang und zufällig sind (32 Byte), reicht SHA-256. Das langsame bcrypt ist nur für von Menschen gewählte Passwörter nötig. Verglichen wird mit `hash_equals()`, damit die Laufzeit nichts verrät.
+- **Schlüssel erzeugen**: `php bin/schluessel-erzeugen.php <kunde>` erzeugt einen zufälligen Schlüssel, zeigt ihn **einmal** an und gibt die Zeile für die `.env` mit dem Hash aus.
+- **Kunden sperren**: `'aktiv' => false` oder Eintrag löschen. Das wirkt sofort, auch für bereits ausgegebene Tokens.
+- **Ist der SecurityCore aus, wird der Header ignoriert.**
+
+### Token (`POST /_login`)
+
+Optionaler Wächter `token`: Der Kunde tauscht seinen Schlüssel **einmal** gegen ein Token mit Ablaufzeit und schickt danach nur noch das Token.
+
+```bash
+curl -X POST -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/_login
+```
+
+```json
+{ "token": "mep1.eyJrIjoid2Vya3N0YXR0LW5vcmQiLCJleHAiOjE3NjQwMDAwMDB9.Qk3…", "gueltigBis": "2026-11-24T22:00:00+01:00" }
+```
+
+```bash
+curl -H "X-MyEndPoint-Key: mep1.eyJr…" http://localhost/MyEndPoint/api.php/fahrzeuge
+```
+
+```php
+'token' => [
+    'secret'      => getenv('TOKEN_SECRET'),   // Pflicht, mindestens 32 Zeichen, kein Standardwert
+    'gueltigkeit' => 8 * 3600,                 // Sekunden
+    'nurToken'    => true,                     // Schlüssel nur noch bei /_login annehmen
+],
+```
+
+| Punkt | Umsetzung |
+|---|---|
+| Wo wird es geschickt? | im selben konfigurierten Header wie der Schlüssel. Tokens erkennt die API am Präfix `mep1.`. |
+| Was steht drin? | nur Kundenname und Ablaufzeit, signiert mit HMAC-SHA256. **Keine Rolle.** |
+| Rolle | wird bei jedem Request aus der Config gelesen. Eine geänderte Rolle oder ein gesperrter Kunde wirkt sofort. |
+| Warum überhaupt Token? | Der dauerhafte Schlüssel wird nur selten übertragen. Ein abgefangenes Token ist nach Ablauf wertlos. |
+| Alle Tokens ungültig machen | `TOKEN_SECRET` ändern |
+| `POST /_login` | ist immer erreichbar, sonst könnte sich niemand ein Token holen. Ohne gültigen Schlüssel antwortet er mit `401`. |
+
+### Rollen
+
+```php
+'sicherheit' => [
+    'rollen' => [                                    // '*' = alle übrigen Ressourcen
+        'leser'     => ['*' => 'r', 'fahrzeughalter' => ''],
+        'werkstatt' => ['fahrzeuge' => 'cru', '*' => 'r'],
+        'admin'     => ['*' => 'crud'],
+    ],
+],
+```
+
+```
+Recht = (rollen[rolle][ressource] ?? rollen[rolle]['*'] ?? '')  ∩  ressourcen[ressource].aktionen
+```
+
+| Ergebnis | Wirkung |
+|---|---|
+| Recht leer (`''`) | Ressource ist für diese Rolle **unsichtbar**: fehlt in Hilfe, Übersicht und `/_openapi`, Zugriff → `404` |
+| Recht vorhanden, Aktion nicht enthalten | Ressource sichtbar, die Aktion fehlt in der Hilfe, Zugriff → `403` |
+| Aktion enthalten | erlaubt |
+
+`aktionen` an der Ressource bleibt die Obergrenze für alle: Ist `treibstoffe` auf `'r'` gesetzt, kann auch `admin` dort nichts ändern.
+
+### Hilfe bei aktiver Sicherheit
+
+- Die Hilfe zeigt **die Befehle, die der Kunde benutzen kann**, und nichts über Wächter oder Einstellungen.
+- `_hilfe`, die Übersicht `GET api.php` und `/_openapi` sind genauso geschützt wie die Daten.
+- Gesamthilfe (`_hilfe`): geschützt durch die globalen Wächter. Ressourcen mit eigenen Wächtern erscheinen nur, wenn der Aufrufer auch diese besteht.
+- Ressourcenhilfe (`_hilfe/<ressource>`, `?_hilfe`): geschützt durch die wirksamen Wächter dieser Ressource.
+- Ohne bzw. mit falschem Schlüssel: `401` mit dem Hinweis, welchen Header man mitschicken muss, ohne Ressourcen oder Felder.
+
+### Immer offen
+
+| Was | Warum |
+|---|---|
+| `OPTIONS` (CORS-Vorabanfrage) | Browser schicken dabei technisch keine eigenen Header mit |
+| `POST /_login` | sonst könnte sich niemand ein Token holen. Prüft selbst den Schlüssel. |
+
+### Weitere Wächter
+
+```php
+'ip' => [
+    'erlaubt'               => ['127.0.0.1', '::1', '192.168.0.0/16'],
+    'vertrauenswuerdigeProxys' => [],        // nur dann wird X-Forwarded-For beachtet
+],
+'requestLimit' => ['proMinute' => 120, 'je' => 'kunde'],   // 'kunde' oder 'ip'
+'audit'        => ['ziel' => 'datei', 'pfad' => __DIR__ . '/../logs/audit.log'],
+```
+
+### Regeln
+
+1. **Fail closed, nicht fail open.** Ist ein Wächter eingeschaltet, aber falsch konfiguriert (Header-Name fehlt, Schlüssel-Hash fehlt, Secret zu kurz, Wächter nicht gefunden, Abhängigkeit fehlt), dann startet die API **nicht**. Optional heißt: Man muss es nicht einschalten. Eingeschaltet muss es aber greifen.
+2. **Keine Sicherheitsdetails in Antworten.** Weder Hilfe noch Fehlermeldungen verraten, welche Wächter aktiv sind.
+3. **Geheimnisse nur als Hash bzw. in der `.env`.** Schlüssel und Tokens erscheinen nie im Log. Geloggt wird der Kundenname.
+4. **Schlüssel nie in der URL** (`?key=…`). URLs landen in Server-Logs, im Browser-Verlauf und in Proxys.
+5. **„Aus“ bleibt nicht unbemerkt.** `config-pruefen.php` und das Server-Log warnen, wenn der SecurityCore aus ist und die API nicht nur auf localhost läuft.
+
+### Stolperfallen
+
+| Stolperfalle | Lösung |
+|---|---|
+| **CORS und eigener Header**: Browser schicken einen selbst benannten Header nur, wenn die API ihn in `Access-Control-Allow-Headers` erlaubt. | Den konfigurierten Header-Namen automatisch in die CORS-Antwort aufnehmen. |
+| **Caching**: Antworten und Hilfe unterscheiden sich je nach Kunde. Ein Proxy könnte die Hilfe von Kunde A an Kunde B ausliefern. | Bei aktiver Sicherheit `Vary: <Header-Name>` und `Cache-Control: private` senden. |
+| **HTML-Formulare** können keine eigenen Header setzen. | `client/index.php` nutzt `fetch()` und kann den Header setzen. Für reine Formulare optional ein Feld (`'formularFeld' => '_schluessel'`, standardmäßig aus), nur im POST-Body, nie in der URL. |
+| **`Authorization` als Header-Name** wird von Apache nicht immer an PHP weitergereicht. | Die vorhandene Regel in `.htaccess` reicht ihn weiter. Eigene `X-…`-Header kommen ohne Zusatz an. |
+| **`X-Forwarded-For` ist fälschbar.** | Nur beachten, wenn die Anfrage von einem eingetragenen `vertrauenswuerdigeProxys` kommt. |
+| **Verweis-Prüfung** über eine geschützte Ressource kann verraten, ob eine ID existiert (`400` „Eintrag gibt es nicht“ oder kein Fehler). | Bewusst in Kauf nehmen oder die Prüfung für Aufrufer ohne Leserecht auf der Zielressource verallgemeinern. |
+| **Lösch-Prüfung** nennt die Ressource, in der ein Datensatz noch verwendet wird. | Für Aufrufer, die diese Ressource nicht sehen dürfen, nur allgemein melden („wird noch von einer anderen Ressource verwendet“). |
+| **Uhrzeit des Servers** falsch → Tokens laufen zu früh oder zu spät ab. | Serverzeit per NTP synchron halten. |
+
+### Planung (S1–S6)
+
+```
+S1  Fundament
+ ├─ S2  ip · https · nurLesen                (ohne Identität)
+ ├─ S3  kundenschluessel                      (liefert die Identität)
+ │   ├─ S4  rollen + Hilfe-Filter             (braucht S3)
+ │   └─ S5  token                             (braucht S3)
+ └─ S6  requestLimit · audit                  (später, sinnvoll nach S3)
+```
+
+| Phase | Inhalt | Aufwand |
+|---|---|---|
+| **S1** | Interface `Waechter`, `Kontext` + `Principal`, Einhängen im Kernel (aus = nichts laden), Variante-C-Logik, Config-Prüfung (fail closed), Statuscodes `401`/`403`/`429` | mittel |
+| **S2** | `ip` (inkl. Proxy-Regel), `https`, `nurLesen` | klein |
+| **S3** | `kundenschluessel`: konfigurierbarer Header + Präfix, Kunden mit Hash, `aktiv`-Schalter, CORS-Header, `Vary`, `bin/schluessel-erzeugen.php` | klein–mittel |
+| **S4** | `rollen`: Rechte pro Ressource, Schnittmenge mit `aktionen`, `404`/`403`-Regel, **Hilfe, Übersicht und `/_openapi` nach Rolle filtern** | mittel |
+| **S5** | `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`, Sperre über Config | mittel |
+| **S6** | `requestLimit` (wenn benötigt), `audit` | mittel |
+
+Die Anmeldung mit Benutzername und Passwort aus der heutigen `api.php` (`zugangsdaten()`, `anmelden()`, `benutzer.sql`) wird **nicht** übernommen. Kundenschlüssel und Token ersetzen sie.
+
+---
+
 ## API-Dokumentation (Swagger)
 
 **Heute** beschreibt `openapi.yaml` jeden Pfad von Hand (`/fahrzeuge/{FID}`, `/fahrzeugtypen/{FTID}` …) und enthält noch das Anmeldeschema `BasicAuth`. `docs.html` zeigt sie mit Swagger UI an. Kommt eine Spalte oder Tabelle dazu, muss die Datei mitgepflegt werden, sonst stimmt die Doku nicht mehr.
@@ -984,7 +1254,7 @@ GET api.php/_openapi   → OpenAPI 3 als JSON
 - `docs.html` lädt diese URL statt der statischen Datei.
 - Die erklärenden Texte aus der heutigen `openapi.yaml` (URL-Aufbau, Formulare) bleiben als Vorlage erhalten. Nur Pfade, Felder und Typen werden generiert.
 - `beschreibung` aus der Config bzw. Datenbank-Kommentare erscheinen auch hier.
-- Ohne Anmeldung entfällt der „Authorize“-Schritt.
+- Ist der SecurityCore aus, gibt es keinen „Authorize“-Schritt. Ist er an, beschreibt `/_openapi` den konfigurierten Header als Sicherheitsschema und enthält **nur die Pfade und Methoden, die die Rolle des Kunden benutzen darf**.
 
 ---
 
@@ -999,8 +1269,9 @@ Die bestehende `api.php` wird **nicht neu geschrieben**, sondern Schritt für Sc
 | `antwort()`, `fehler()`, `exceptionBehandeln()` | `Http\Response`, `Http\ErrorHandler` |
 | Routing (Abschnitt 6b) | `Http\Router` |
 | Methode und Override (6c), `eingabeLesen()` | `Http\Request` |
-| `zugangsdaten()`, `anmelden()`, `authDb()`, Prüfung in 6d | **entfällt** |
-| `ROLLEN` | **entfällt** (optional `aktionen` pro Ressource → `Http\ActionGuard`) |
+| `zugangsdaten()`, `anmelden()`, `authDb()`, Prüfung in 6d | **entfällt** (ersetzt durch den optionalen Wächter `kundenschluessel`) |
+| `ROLLEN` | optional `Security\RollenWaechter`; ohne SecurityCore nur `aktionen` pro Ressource → `Http\ActionGuard` |
+| – (neu) | `Security\SecurityCore`, `Security\Kontext`, `Security\Principal`, Wächter (`IpWaechter`, `KundenschluesselWaechter`, `TokenWaechter` …) |
 | `eingabeLesen()` (JSON/Formular) | `Codec\JsonCodec`, `Codec\FormCodec` |
 | `db()` (Verbindungsaufbau, Singleton) | `Connection\ConnectionManager` + `Connector\PdoConnector` |
 | `spalten()`, `primaerschluessel()`, `primaerschluesselNamen()` | `Driver\PdoDriver::schema()` + `Schema\SchemaCache` |
@@ -1029,6 +1300,7 @@ MyEndPoint/
 │   ├─ config-pruefen.php
 │   ├─ schema-aktualisieren.php
 │   ├─ bausteine-aktualisieren.php
+│   ├─ schluessel-erzeugen.php ← Kundenschlüssel + Hash für die .env (SecurityCore)
 │   ├─ klassen-erzeugen.php
 │   └─ umziehen.php
 ├─ cache/                     ← erzeugt (schema.php, bausteine-*.php), nicht im Git
@@ -1041,6 +1313,9 @@ MyEndPoint/
 │   ├─ Connector/             ← Connector + Bausteine (automatisch erkannt): PdoConnector, MongoConnector, FileConnector
 │   ├─ Codec/                 ← Codec, CodecRegistry + Bausteine (automatisch erkannt): JsonCodec, FormCodec, CsvCodec, …
 │   ├─ Driver/                ← Driver, DriverFactory, PdoDriver, MongoDriver, FileDriver
+│   ├─ Security/              ← SecurityCore, Kontext, Principal, Waechter + Bausteine (automatisch erkannt):
+│   │                            IpWaechter, HttpsWaechter, NurLesenWaechter, KundenschluesselWaechter,
+│   │                            TokenWaechter, RollenWaechter, RequestLimitWaechter, AuditWaechter
 │   ├─ Schema/                ← SchemaCache
 │   ├─ Mapping/               ← FieldMapper, TypeCaster, ReferenceChecker, Record
 │   ├─ Query/                 ← Query, QueryParser
@@ -1072,6 +1347,8 @@ Mit dem Wegfall der Anmeldung entfällt auch die bcrypt-Prüfung (`password_veri
 | Verbindung aufbauen | 1–5 ms | einmal pro Request, nur wenn die Datenbank gebraucht wird |
 | PluginFinder: Cache lesen 🔜 | Mikrosekunden | ein `filemtime()` + OPcache. In Produktion ohne `filemtime()`. |
 | PluginFinder: neu suchen 🔜 | einige ms | nur wenn ein Baustein hinzukommt oder entfernt wird |
+| SecurityCore aus (Standard) 🔜 | 0 | keine Sicherheitsklasse wird geladen |
+| SecurityCore an 🔜 | Mikrosekunden | Kundenschlüssel (SHA-256), Token (HMAC), Rollen, IP. Kein bcrypt, deshalb kein spürbarer Einfluss auf den Durchsatz. `audit` ~1 ms pro Schreibzugriff. |
 
 | Ausbaustufe | Durchsatz auf 2 vCPU (grob) |
 |---|---|
@@ -1156,9 +1433,14 @@ ab -n 1000 -c 20 "http://localhost/MyEndPoint/api.php/fahrzeuge?limit=50"
 
 ## Sicherheit
 
-### Ohne Anmeldung: Schutz über das Netz
+### Zwei Ebenen
 
-Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten lesen, ändern und löschen**. Das ist eine bewusste Entscheidung. Der Schutz muss deshalb außerhalb der API liegen:
+- **Grundschutz**: immer aktiv, nicht abschaltbar (siehe Tabellen unten).
+- **Zugriffskontrolle**: optional über den [SecurityCore](#securitycore-optional), standardmäßig aus.
+
+### Standard (SecurityCore aus): Schutz über das Netz
+
+Ist der SecurityCore aus, kann **jeder, der die Adresse erreicht, alle Daten lesen, ändern und löschen**. Das ist eine bewusste Entscheidung. Der Schutz muss dann außerhalb der API liegen:
 
 - [ ] **Nur im lokalen bzw. internen Netz betreiben**, nie direkt aus dem Internet erreichbar.
 - [ ] Zugriff auf bestimmte Rechner beschränken, z. B. in der `.htaccess`:
@@ -1172,6 +1454,17 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 - [ ] **Personendaten prüfen** (`fahrzeughalter`): Was nicht gebraucht wird, mit `'versteckt' => true` ausblenden 🔜.
 - [ ] **Regelmäßige Backups** der Datenbank. Jeder Aufrufer kann löschen, der Lösch-Response enthält zwar den gelöschten Datensatz, ersetzt aber kein Backup.
 - [ ] `/_hilfe` und `/_openapi` legen die Struktur aller Tabellen offen. Im geschützten Netz ist das gewollt, öffentlich wäre es ein Problem.
+
+### Mit SecurityCore
+
+Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere Kunden unterschiedliche Rechte brauchen:
+
+- [ ] `sicherheit.aktiv = true` mit mindestens `kundenschluessel` und `rollen`, oder diese Wächter für die betroffenen Ressourcen eintragen (Variante C).
+- [ ] `https` als Wächter aktivieren. Kundenschlüssel und Tokens dürfen nicht unverschlüsselt übertragen werden.
+- [ ] Schlüssel nur mit `bin/schluessel-erzeugen.php` erzeugen und nur als Hash in die `.env` schreiben.
+- [ ] Für jeden Kunden die kleinste passende Rolle vergeben.
+- [ ] Optional `token` mit `nurToken = true`, damit der dauerhafte Schlüssel nur bei `/_login` übertragen wird.
+- [ ] `php bin/config-pruefen.php` ausführen. Bei Fehlern startet die API absichtlich nicht (fail closed).
 
 ### Was `api.php` schon richtig macht
 
@@ -1206,6 +1499,11 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 | Code einschleusen über den Baustein-Ordner | `src/Connector/`, `src/Codec/` für den Webserver nicht beschreibbar, in Produktion `automatischSuchen = false` |
 | Passwort im Log | Verbindungsfehler abfangen, nur die Meldung loggen, PHP 8.2+ |
 | Datenbank nicht erreichbar | `503` statt `500`, Details nur im Log |
+| Unbefugter Zugriff (optional) | SecurityCore: `ip`, `kundenschluessel`, `token`, `rollen` |
+| Rolle fälschen | Rolle steht nur in der Config, der Header beweist nur, welcher Kunde anfragt |
+| Schlüssel ausspähen | nur Hashes gespeichert, `hash_equals()`, nie in URL oder Log, Token mit Ablaufzeit |
+| SecurityCore halb konfiguriert | fail closed: die API startet nicht |
+| Hilfe verrät fremde Ressourcen | Hilfe, Übersicht und `/_openapi` nach Rolle gefiltert, unsichtbare Ressourcen → `404` |
 
 ---
 
@@ -1213,9 +1511,10 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 
 | Nicht enthalten | Grund | Stattdessen |
 |---|---|---|
-| Anmeldung / Login | nicht benötigt | Schutz über das Netz (siehe [Sicherheit](#sicherheit)) |
-| Rollen und Rechte pro Person | ohne Anmeldung nicht möglich | `aktionen` pro Ressource für alle gleich |
-| Request-Limit (Anfragen pro Zeit) | vorerst nicht benötigt | kann später ergänzt werden |
+| Pflicht-Anmeldung | nicht benötigt | Standard offen, optional [SecurityCore](#securitycore-optional) |
+| Anmeldung mit Benutzername und Passwort | durch Kundenschlüssel und Token ersetzt | Wächter `kundenschluessel` + `token` |
+| Benutzerverwaltung (Konten-Datenbank) | Kunden stehen in der Config | `sicherheit.kunden` + `bin/schluessel-erzeugen.php` |
+| Rollen ohne SecurityCore | ohne Identität keine Rolle | `aktionen` pro Ressource für alle gleich |
 | VMs / Container starten oder verwalten | nicht Teil des Projekts | Bereitstellung außerhalb der API |
 | Streaming großer Datenmengen | Einfachheit | Seiten mit `limit`/`offset` |
 | Backend-Wahl per Request | Sicherheit | Backend in der Config |
@@ -1241,7 +1540,7 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 ### Version 2.0
 
 **Phase 1: Aufräumen und Grundlage**
-- [ ] **Anmeldung und Rollen entfernen:** `zugangsdaten()`, `anmelden()`, `authDb()`, `AUTH_*`, `TBL_BENUTZER`, `ROLLEN`, Prüfung in 6d, Block `angemeldet` in der Übersicht
+- [ ] **Pflicht-Anmeldung und Rollen entfernen:** `zugangsdaten()`, `anmelden()`, `authDb()`, `AUTH_*`, `TBL_BENUTZER`, `ROLLEN`, Prüfung in 6d, Block `angemeldet` in der Übersicht. Die Rollen-Idee kommt später optional im SecurityCore zurück (S4).
 - [ ] `client/index.php` ohne `Authorization`-Header, `openapi.yaml` ohne `BasicAuth`
 - [ ] `benutzer.sql` entfernen
 - [ ] SQL-Dump der Datenbank `fahrzeugverwaltung` ins Repo
@@ -1281,6 +1580,14 @@ Ohne Anmeldung und Rollen kann **jeder, der die Adresse erreicht, alle Daten les
 - [ ] `bin/klassen-erzeugen.php` (ersetzt `api_outerlayer/`)
 - [ ] `bin/umziehen.php`
 - [ ] Debug-Header, Lasttest, Schätzwerte durch Messwerte ersetzen
+
+**SecurityCore (optional, unabhängig von Phase 3 und 4, setzt Phase 2 voraus)**
+- [ ] **S1** Fundament: `Waechter`-Interface, `Kontext`/`Principal`, Einhängen im Kernel (aus = nichts laden), Variante C, Config-Prüfung (fail closed), `401`/`403`/`429`
+- [ ] **S2** `ip` (mit Proxy-Regel), `https`, `nurLesen`
+- [ ] **S3** `kundenschluessel`: konfigurierbarer Header + Präfix, Kunden mit Hash, `aktiv`-Schalter, CORS-Header, `Vary`, `bin/schluessel-erzeugen.php`
+- [ ] **S4** `rollen`: Rechte pro Ressource, Schnittmenge mit `aktionen`, `404`/`403`, Hilfe, Übersicht und `/_openapi` nach Rolle filtern
+- [ ] **S5** `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`
+- [ ] **S6** `requestLimit` (wenn benötigt), `audit`
 
 ---
 
