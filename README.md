@@ -4,7 +4,7 @@ Eine REST-API in PHP, die jede freigegebene Datenbanktabelle per HTTP lesbar, an
 
 Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehrere Ein- und Ausgabeformate (JSON, Formular, CSV, XML …), mehrere Speicher-Backends (MariaDB, MongoDB, Dateien), eine zentrale Konfiguration, **eingebaute Hilfe-Befehle** und einen **optionalen SecurityCore**, der standardmäßig ausgeschaltet ist.
 
-> **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON, noch mit Anmeldung). Alles, was mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt. Den Fortschritt zeigt die [Roadmap](#roadmap).
+> **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON, ohne Anmeldung, Konfiguration in `config/`, Typprüfung aus der Datenbank). Phase 1 der [Roadmap](#roadmap) ist erledigt. Alles, was mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt.
 >
 > **Für Anwender:** Die Bedienung der API mit allen Hilfe-Befehlen erklärt das [Benutzerhandbuch](HANDBUCH.md).
 
@@ -54,7 +54,8 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Felder | **automatisch aus der Datenbank**, Config nur für Ausnahmen | so wie `api.php` es heute schon macht |
 | Verbindungen | **ein `ConnectionManager`** baut alle Verbindungen auf, erst bei Bedarf, höchstens eine pro Request. Die API spricht nur mit dem Treiber. | ein Ort für Zugangsdaten und Optionen, Backends austauschbar, testbar |
 | Bausteine | **werden automatisch erkannt** (`PluginFinder`): neue Datei in den Ordner legen, fertig. Die Config hat Vorrang, in Produktion wird nur auf Befehl gesucht. | neue Datenbanken und Formate ohne Änderung am Kern |
-| PHP-Version | **8.2 oder neuer empfohlen** (8.1 läuft) | ab 8.2 erscheinen Passwörter nicht mehr im Stacktrace (siehe [Stolperfallen](#stolperfallen)) |
+| PHP-Version | **8.2 oder neuer empfohlen** (8.1 läuft) | ab 8.2 erscheinen Passwörter nicht mehr im Stacktrace (siehe [Stolperfallen](#stolperfallen)). Unter 8.1 loggt `api.php` Datenbankfehler deshalb ohne Stacktrace. |
+| Datentypen | **aus der Datenbank erkannt und vor dem Speichern geprüft** (`TypeCaster`) | falsche Werte kommen als klare `400`-Meldung mit Feldnamen zurück, nicht erst als MySQL-Fehler |
 | Abwärtskompatibilität | `api.php/<ressource>/<id>`, Formulare und `client/index.php` funktionieren weiter | die Aufgabe baut darauf auf |
 | Sprache | **Deutsch** für Config, JSON-Schlüssel, Fehlermeldungen und Hilfe, **Englisch** für Klassen und Namespaces (PHP-Konvention) | Clients sehen nur Deutsch, der Code folgt PSR-4 |
 
@@ -64,10 +65,11 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 
 **Voraussetzung:** PHP 8.1 oder neuer (8.2+ empfohlen), MariaDB/MySQL, Apache mit `mod_rewrite` (bei XAMPP aktiv).
 
-1. Den Ordner nach `htdocs/MyEndPoint` kopieren.
-2. Die Datenbank `fahrzeugverwaltung` mit den Tabellen `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe` und `fahrzeughalter` anlegen.
-   > Ein SQL-Dump dieser Datenbank liegt noch nicht im Repo (siehe [Roadmap](#roadmap)).
-3. Ausprobieren:
+1. Den Ordner nach `htdocs/MyEndPoint` kopieren (der Ordnername ist frei wählbar).
+2. `config/.env.example` nach `config/.env` kopieren und die Zugangsdaten zur Datenbank eintragen (XAMPP: `DB_USER=root`, `DB_PASS=` leer). Zum Entwickeln `API_DEBUG=1` setzen.
+3. In `config/gateway.php` unter `ressourcen` eintragen, welche Tabellen die API anbieten soll, und unter `verbindungen` die Datenbank (`dbname=…`).
+   > Ein SQL-Dump ist nicht nötig: Die API arbeitet mit **jeder** Tabellenstruktur. Spalten, Datentypen, Grenzen, Pflichtfelder und Verweise liest sie selbst aus der Datenbank. Das Beispiel in `config/gateway.php` erwartet die Datenbank `fahrzeugverwaltung` mit den Tabellen `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe` und `fahrzeughalter`.
+4. Ausprobieren:
 
    ```bash
    curl http://localhost/MyEndPoint/api.php
@@ -75,11 +77,11 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
    curl "http://localhost/MyEndPoint/api.php/_hilfe?format=text"      # 🔜
    ```
 
-4. Im Browser:
+5. Im Browser:
    - `http://localhost/MyEndPoint/client/`: Formular-Client
    - `http://localhost/MyEndPoint/docs.html`: Swagger-Doku zum Ausprobieren
 
-> **Übergang:** Bis die Anmeldung aus `api.php` entfernt ist (Roadmap Phase 1), braucht die heutige Version noch die Konten-Datenbank aus `benutzer.sql` und bei `curl` zusätzlich `-u email:passwort`.
+> Fehlt `config/.env` oder ist die Konfiguration fehlerhaft, antwortet die API mit `500` und nennt den Grund (Details zur Konfiguration nur mit `API_DEBUG=1`, sonst im Apache-Log). Composer ist nicht nötig, die Klassen unter `src/` lädt `api.php` selbst.
 
 ---
 
@@ -87,15 +89,22 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 
 | Datei / Ordner | Inhalt | Status |
 |---|---|---|
-| `api.php` | Die API (Version 1), eine Datei, prozedural | ✅ läuft (Anmeldung wird entfernt) |
-| `.htaccess` | URLs ohne `api.php` | ✅ |
-| `client/index.php` | HTML/JS-Client mit `fetch()` | ✅ (Anmeldung wird entfernt) |
+| `api.php` | Die API (Version 1), eine Datei, prozedural | ✅ läuft, ohne Anmeldung |
+| `config/gateway.php` | Konfiguration: Ressourcen, Verbindung, Grenzen, CORS | ✅ |
+| `config/.env.example` | Vorlage für `config/.env` (Zugangsdaten, `API_DEBUG`) – `.env` selbst ist nicht im Git | ✅ |
+| `config/.htaccess` | sperrt den Ordner für das Web | ✅ |
+| `src/Config/` | `ConfigLoader` (lädt `.env` + `gateway.php`), `ConfigValidator` (Prüfung beim Start) | ✅ |
+| `src/Mapping/TypeCaster.php` | Datentypen aus der Datenbank erkennen, Eingaben prüfen und umwandeln | ✅ |
+| `src/…` (übrige Dateien) | Gerüst für Phase 2, noch leer | 🔜 |
+| `composer.json` | PSR-4-Autoloading (`Gateway\` → `src/`), optional | ✅ |
+| `.htaccess` | URLs ohne `api.php`, sperrt `config/`, `src/`, `.git` … | ✅ |
+| `.gitignore` | `.idea/`, `config/.env`, `cache/`, `vendor/` | ✅ |
+| `client/index.php` | HTML/JS-Client mit `fetch()`, Eingabefelder aus den Datentypen der API | ✅ |
 | `openapi.yaml` | OpenAPI-3-Beschreibung, Pfade von Hand gepflegt | ✅ (wird ersetzt, siehe [Swagger](#api-dokumentation-swagger)) |
 | `docs.html` | Swagger UI, lädt `openapi.yaml` | ✅ |
 | `HANDBUCH.md` | Benutzerhandbuch mit allen Hilfe-Befehlen | ✅ |
 | `Aufgabe.md` | Aufgabenstellung | – |
-| `benutzer.sql` | Konten-Datenbank für die Anmeldung | ❌ entfällt mit der Anmeldung |
-| `api_outerlayer/fahrzeug.php` | erster Ansatz für Objekte | ⚠️ ungültiges PHP (`class fahrzeug()`), wird ersetzt |
+| `api_outerlayer/DataSource.php` | Entwurf für das Treiber-Interface | ⚠️ noch ohne `<?php` und mit UTF-8-BOM, wird in Phase 2 nach `src/Driver/` übernommen |
 
 ---
 
@@ -105,6 +114,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 |---|---|---|
 | CRUD über HTTP (GET, POST, PUT, PATCH, DELETE) | ✅ | ✅ |
 | Felder automatisch aus der Datenbank | ✅ bei jedem Request | ✅ gecacht 🔜 |
+| Datentypen und Grenzen aus der Datenbank, Eingaben vor dem Speichern prüfen | ✅ (`TypeCaster`) | ✅ |
 | Fremdschlüssel + Namensregel erkennen | ✅ | ✅ auch über Backends hinweg 🔜 |
 | Verweise beim Speichern / Löschen prüfen | ✅ | ✅ |
 | Filter `?spalte=wert`, Platzhalter `*` | ✅ | ✅ |
@@ -113,9 +123,9 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | HTML-Formulare (`_method`, `operation`, ID als Feld) | ✅ | ✅ |
 | Übersicht `GET api.php` | ✅ | ✅ |
 | **Hilfe-Befehle** (`_hilfe`, `?_hilfe`, `--hilfe`) | ❌ | 🔜 |
-| Anmeldung (Basic Auth, Pflicht) | ✅ | **entfällt** |
+| Pflicht-Anmeldung | entfernt ✅ | **entfällt** |
 | SecurityCore (optional, Standard: aus) | ❌ | 🔜 Kundenschlüssel im Header, Token, IP-Freigabe … |
-| Rollen | ✅ (pro HTTP-Methode, Pflicht) | 🔜 nur mit SecurityCore, pro Kunde und Ressource |
+| Rollen | ❌ (mit der Anmeldung entfernt) | 🔜 nur mit SecurityCore, pro Kunde und Ressource |
 | Hilfe gefiltert nach Rolle | ❌ | 🔜 nur mit SecurityCore |
 | Aktionen pro Ressource einschränken (z. B. nur lesen) | ❌ | 🔜 optional |
 | Eingabe JSON / Formular | ✅ | ✅ |
@@ -123,9 +133,10 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Ausgabe | nur JSON | JSON + CSV, XML, YAML, SQL, Text (Hilfe) 🔜 |
 | MariaDB / MySQL | ✅ | ✅ |
 | MongoDB, Dateien als Speicher | ❌ | 🔜 |
-| Konfiguration | Konstanten in `api.php` | `config/gateway.php` + `.env` 🔜 |
+| Konfiguration | `config/gateway.php` + `.env` ✅ | dazu Treiber, Bausteine, Sicherheit 🔜 |
+| CORS | nur erlaubte Adressen aus der Config ✅ | ✅ |
 | Swagger-Doku | statische `openapi.yaml` | automatisch erzeugt (`/_openapi`) 🔜 |
-| Aufbau | eine Datei | Klassen unter `src/` 🔜 |
+| Aufbau | eine Datei + erste Klassen (`Config\…`, `Mapping\TypeCaster`) | Klassen unter `src/` 🔜 |
 
 ---
 
@@ -282,7 +293,7 @@ Groß-/Kleinschreibung der Spaltennamen ist egal (`fid` = `FID`). Leere Filterwe
 { "meldung": "Datensatz \"43\" wurde gelöscht.", "geloescht": { "FID": 43, "Marke": "VW" } }
 ```
 
-**Übersicht** (`GET api.php`). Der Block `angemeldet` entfällt mit der Anmeldung:
+**Übersicht** (`GET api.php`). Jedes Feld mit dem Typ aus der Datenbank (`typ`), dem einheitlichen `datentyp` und seinen Grenzen (siehe [Typen](#typen)):
 
 ```json
 {
@@ -291,14 +302,20 @@ Groß-/Kleinschreibung der Spaltennamen ist egal (`fid` = `FID`). Leere Filterwe
     "fahrzeuge": {
       "url": "http://localhost/MyEndPoint/api.php/fahrzeuge",
       "felder": {
-        "FID":  { "typ": "int(11)", "pk": true,  "auto": true,  "null": false, "pflicht": false, "verweis": null },
-        "FTID": { "typ": "int(11)", "pk": false, "auto": false, "null": false, "pflicht": true,
+        "FID":  { "typ": "int(11)", "datentyp": "int", "min": -2147483648, "max": 2147483647,
+                  "pk": true,  "auto": true,  "null": false, "pflicht": false, "verweis": null },
+        "Fahrzeug_Name": { "typ": "varchar(50)", "datentyp": "string", "laenge": 50,
+                  "pk": false, "auto": false, "null": false, "pflicht": true, "verweis": null },
+        "FTID": { "typ": "int(11)", "datentyp": "int", "min": -2147483648, "max": 2147483647,
+                  "pk": false, "auto": false, "null": false, "pflicht": true,
                   "verweis": { "ressource": "fahrzeugtypen", "spalte": "FTID" } }
       }
     }
   }
 }
 ```
+
+`hilfe` 🔜 kommt mit den Hilfe-Befehlen.
 
 ### Fehler
 
@@ -314,7 +331,7 @@ Fehler kommen immer als JSON, auch wenn ein anderes Ausgabeformat angefragt wurd
 
 | Status | Wann |
 |---|---|
-| `400` | ungültige Eingabe oder Parameter, Pflichtfeld fehlt, Verweis zeigt ins Leere |
+| `400` | ungültige Eingabe oder Parameter, Pflichtfeld fehlt, Wert passt nicht zum Datentyp, Verweis zeigt ins Leere |
 | `401` | nur mit SecurityCore 🔜: Kundenschlüssel bzw. Token fehlt, ist falsch oder abgelaufen |
 | `403` | nur mit SecurityCore 🔜: Ressource ist für die Rolle sichtbar, die Aktion aber nicht erlaubt, oder ein Wächter wie `ip` / `https` lehnt ab |
 | `404` | Ressource oder Datensatz unbekannt. Mit SecurityCore auch: Ressource, auf die die Rolle **gar kein** Recht hat. |
@@ -327,7 +344,7 @@ Fehler kommen immer als JSON, auch wenn ein anderes Ausgabeformat angefragt wurd
 | `500` | interner Fehler, oder Konfiguration ungültig |
 | `503` | Datenbank bzw. Backend nicht erreichbar 🔜 (heute `500`) |
 
-Ohne SecurityCore kommen `401`, `403` und `429` nicht vor. Die heutige `api.php` nutzt `401`/`403` noch für ihre Pflicht-Anmeldung, die entfällt.
+Ohne SecurityCore kommen `401`, `403` und `429` nicht vor.
 
 Datenbankfehler, die der Client verursacht hat, werden übersetzt (heute `MYSQL_FEHLER`, künftig im jeweiligen Treiber):
 
@@ -428,28 +445,32 @@ Jedes Werkzeug in `bin/` zeigt mit `--hilfe` (oder `--help`, `-h`) Aufruf, Optio
 
 ## Konfiguration
 
-### Heute: Konstanten in `api.php`
+### Version 1: `config/gateway.php` + `.env` ✅
 
-| Konstante | Bedeutung | in 2.0 |
+Seit Phase 1 stehen die früheren Konstanten aus `api.php` in `config/gateway.php`, die Zugangsdaten in `config/.env` (Vorlage: `config/.env.example`, nicht im Git, per `.htaccess` für das Web gesperrt):
+
+| früher in `api.php` | jetzt | |
 |---|---|---|
-| `DB2_DSN`, `DB2_USER`, `DB2_PASS` | Verbindung zur Fahrzeug-Datenbank | → `verbindungen` + `.env` |
-| `RESSOURCEN` | Whitelist: Name in der URL → Tabelle | → `ressourcen` |
-| `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | Seitengröße 100 / höchstens 1000 | → `grenzen` |
-| `API_DEBUG` | genaue Fehlermeldungen in der Antwort | → `debug` (Standard: aus) |
-| `MYSQL_FEHLER` | MySQL-Fehlernummer → Status + Meldung | → in den PdoDriver |
-| `AUTH_DSN`, `AUTH_USER`, `AUTH_PASS`, `TBL_BENUTZER` | Konten-Datenbank | **entfällt** (Kunden stehen in `sicherheit.kunden`) |
-| `ROLLEN` | Rolle → erlaubte HTTP-Methoden | → optional `sicherheit.rollen`, pro Ressource |
+| `DB2_DSN`, `DB2_USER`, `DB2_PASS` | `verbindungen` + `.env` (`DB_USER`, `DB_PASS`) | ✅ |
+| `RESSOURCEN` | `ressourcen` mit `verbindung` und `quelle` | ✅ |
+| `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | `grenzen` | ✅ |
+| `API_DEBUG` | `debug`, eingeschaltet mit `API_DEBUG=1` in der `.env` (Standard: aus) | ✅ |
+| `Access-Control-Allow-Origin: *` | `cors.erlaubteUrspruenge` | ✅ |
+| `AUTH_*`, `TBL_BENUTZER`, `ROLLEN` | entfernt (Kunden und Rollen kommen optional mit dem SecurityCore) | ✅ |
+| `MYSQL_FEHLER` | bleibt vorerst in `api.php` | 🔜 in den PdoDriver (Phase 2) |
 
-### 🔜 Künftig: `config/gateway.php` + `.env`
+Der `ConfigLoader` (`src/Config/ConfigLoader.php`) liest zuerst `config/.env` und übergibt die Werte an `gateway.php` als Array **`$env`**, also `$env['DB_USER']` statt `getenv('DB_USER')`. So wirkt eine Änderung an der `.env` sofort, ohne Apache-Neustart, und das Passwort landet nicht in der Prozessumgebung. In `api.php` stehen die Werte danach als Konstanten bereit (`RESSOURCEN`, `DB_VERBINDUNG`, `LIMIT_*`, `API_DEBUG`, `CORS_URSPRUENGE`). Version 1 kennt nur den Treiber `pdo` und eine Verbindung für alle Ressourcen. Ist OPcache aktiv, prüft PHP geänderte Dateien standardmäßig nur alle 2 Sekunden (`opcache.revalidate_freq`): Eine Änderung an `gateway.php` kann also kurz dauern, Änderungen an der `.env` wirken sofort.
 
-Die Konfiguration wird ein PHP-Array. OPcache hält es im Speicher, es muss also nicht bei jedem Request geparst werden. Zugangsdaten zur Datenbank stehen nicht darin, sondern in `config/.env`.
+### 🔜 Künftig: vollständige `config/gateway.php`
+
+Die Konfiguration bleibt ein PHP-Array. OPcache hält es im Speicher, es muss also nicht bei jedem Request geparst werden. Zugangsdaten zur Datenbank stehen nicht darin, sondern in `config/.env`. So sieht sie aus, wenn alle Phasen umgesetzt sind:
 
 ```php
 <?php
 // config/gateway.php
 return [
 
-    'debug' => getenv('API_DEBUG') === '1',      // Standard: aus
+    'debug' => ($env['API_DEBUG'] ?? '0') === '1',      // Standard: aus
 
     'grenzen' => [
         'maxAnfrageBytes' => 5 * 1024 * 1024,     // größer → 413 (schützt den Arbeitsspeicher)
@@ -467,7 +488,7 @@ return [
 
     // Bausteine (Connectoren, Codecs, Wächter) – siehe „Verbindungen und Bausteine“
     'bausteine' => [
-        'automatischSuchen' => getenv('API_DEBUG') === '1',   // Entwicklung: ja, Produktion: nein
+        'automatischSuchen' => ($env['API_DEBUG'] ?? '0') === '1',   // Entwicklung: ja, Produktion: nein
         'abschalten' => ['xlsx'],                              // gefunden, aber nicht anbieten
         'ersetzen'   => [],                                    // z. B. ['pdo' => App\MeinPdoConnector::class]
     ],
@@ -480,12 +501,12 @@ return [
         'fahrzeuge' => [
             'treiber' => 'pdo',
             'dsn'     => 'mysql:host=127.0.0.1;dbname=fahrzeugverwaltung;charset=utf8mb4',
-            'user'    => getenv('DB_USER'),
-            'pass'    => getenv('DB_PASS'),
+            'user'    => $env['DB_USER'],
+            'pass'    => $env['DB_PASS'],
         ],
         'archiv' => [
             'treiber'   => 'mongo',
-            'uri'       => getenv('MONGO_URI'),
+            'uri'       => $env['MONGO_URI'],
             'datenbank' => 'fahrzeugarchiv',
         ],
     ],
@@ -585,6 +606,8 @@ Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 
 Ist etwas falsch, antwortet die API mit `500` und schreibt den Grund ins Log. Manuell prüfen: `php bin/config-pruefen.php` 🔜.
 
+**Version 1 prüft schon** (`src/Config/ConfigValidator.php`): `config/.env` vorhanden, jede Verbindung mit Treiber `pdo` und `dsn`, jede Ressource mit existierender Verbindung und `quelle`, Ressourcennamen (Kleinbuchstaben, nicht mit `_`), `grenzen` (1 ≤ `limitStandard` ≤ `limitMaximum`), Adressen in `cors.erlaubteUrspruenge`, alle Ressourcen auf **einer** Verbindung. Die Details stehen mit `API_DEBUG=1` auch in der Antwort. Die übrigen Punkte oben kommen mit den jeweiligen Bausteinen.
+
 ---
 
 ## Formate (Codecs)
@@ -647,14 +670,42 @@ Ein Datensatz ist ein einfaches Schlüssel-Wert-Array. Erlaubt sind nur `int`, `
 
 | Typ | MariaDB | MongoDB | JSON-Ausgabe | CSV / XML |
 |---|---|---|---|---|
-| `int` | INT, BIGINT | int32/int64 | `42` | `42` |
+| `int` | TINYINT, SMALLINT, MEDIUMINT, INT, BIGINT, YEAR, BIT | int32/int64 | `42` | `42` |
 | `float` | DOUBLE, FLOAT | double | `3.5` | `3.5` |
 | `decimal` | DECIMAL | Decimal128 | `"12.50"` (String, keine Rundungsfehler) | `12.50` |
-| `string` | VARCHAR, TEXT | string | `"Golf"` | `Golf` |
+| `string` | CHAR, VARCHAR, TEXT, ENUM, SET, TIME, JSON, BLOB | string | `"Golf"` | `Golf` |
 | `bool` | TINYINT(1) | bool | `1` / `0` | `1` / `0` |
-| `datetime` | DATE, DATETIME | Date | `"2026-11-23 10:00:00"` | wie JSON |
+| `datetime` | DATE, DATETIME, TIMESTAMP | Date | `"2026-11-23 10:00:00"` | wie JSON |
 
-Bei der Eingabe wird `true`/`false` zu `1`/`0`, ein leeres Feld zu `NULL` (wenn die Spalte das erlaubt), und Texte werden getrimmt. 🔜 Aus CSV und Formularen wird außerdem das deutsche Dezimalkomma akzeptiert (`"4,2"` → `4.2`).
+**Die Datenbank ist das Template – auch für die Typen** ✅. Der `TypeCaster` (`src/Mapping/TypeCaster.php`) liest aus dem Spaltentyp den `datentyp` und die Grenzen und zeigt sie in der Übersicht `GET api.php`:
+
+| Grenze | Herkunft | Beispiel |
+|---|---|---|
+| `min`, `max` | Wertebereich des Ganzzahltyps, `UNSIGNED` | `INT UNSIGNED` → 0 bis 4294967295 |
+| `laenge` | `VARCHAR(n)`, `CHAR(n)` (Zeichen), TEXT/BLOB (Bytes, dann `bytes: true`) | `VARCHAR(50)` → 50 |
+| `stellen`, `nachkomma` | `DECIMAL(p,s)` | `DECIMAL(6,2)` → höchstens 9999.99 |
+| `werte` | `ENUM(…)`, `SET(…)` (dann `mehrfach: true`) | `['PKW', 'LKW']` |
+| `format` | DATE `Y-m-d`, DATETIME `Y-m-d H:i:s`, TIME `H:i:s`, JSON `json` | |
+
+**Jede Eingabe wird vor der Datenbank geprüft und umgewandelt** ✅, beim Anlegen, Ändern, bei Filtern und bei der ID in der URL:
+
+- Texte werden getrimmt, ein leeres Feld wird zu `NULL` (wenn die Spalte das erlaubt).
+- `true`/`false` → `1`/`0`; bei `bool` auch `"ja"`/`"nein"` und `"1"`/`"0"`.
+- Deutsches Dezimalkomma bei `float` und `decimal`: `"4,2"` → `4.2`.
+- Datum auch als `TT.MM.JJJJ`, Datum mit Uhrzeit auch mit `T` oder ohne Sekunden. Ungültige Daten wie der 31.02. werden abgelehnt.
+- ENUM-Werte ohne Rücksicht auf Groß-/Kleinschreibung (`"pkw"` → `"PKW"`).
+
+Passt ein Wert nicht, kommt `400` mit dem Feldnamen statt eines MySQL-Fehlers:
+
+```json
+{ "fehler": "Ungültige Eingaben.", "details": [
+    "Feld \"Leistung\": ganze Zahl von 0 bis 65535 erwartet.",
+    "Feld \"Fahrzeug_Name\": höchstens 50 Zeichen erlaubt.",
+    "Feld \"Preis\": höchstens 2 Nachkommastellen erlaubt."
+] }
+```
+
+Bei Filtern heißt es entsprechend `Filter "Leistung": …`. Eine ID, die nicht zum Typ des Primärschlüssels passt (`/fahrzeuge/abc`), ergibt `404`.
 
 ### Verweise
 
@@ -976,7 +1027,7 @@ In Produktion werden neue Bausteine damit nur **bewusst** aktiviert und nicht sc
 | **Dateiname ≠ Klassenname** oder falscher Namespace | Autoloader findet die Klasse nicht, der Baustein wird stillschweigend übersprungen | Konvention einhalten. `config-pruefen.php` meldet Dateien im Ordner, die keinen gültigen Baustein enthalten. |
 | **Zwei Bausteine mit demselben `typ()`** | der zuletzt gefundene gewinnt, abhängig von der Reihenfolge im Dateisystem | doppelte Typen als Fehler melden. Bewusst ersetzen nur über `bausteine.ersetzen`. |
 | **Abstrakte Klassen, Interfaces, Hilfsklassen** im Ordner | würden fälschlich als Baustein gelten | `isInstantiable()` + `implementsInterface()` prüfen, Hilfsklassen ohne Endung `…Connector`/`…Codec` benennen |
-| **Passwort im Stacktrace** (PHP 8.1) | schlägt `new PDO(...)` fehl, kann das Passwort als Argument im Stacktrace stehen. `api.php` schreibt heute `error_log((string) $e)` mit Stacktrace. | Verbindungsfehler selbst abfangen und nur `getMessage()` loggen. Ab PHP 8.2 wird das Passwort-Argument automatisch ausgeblendet. |
+| **Passwort im Stacktrace** (PHP 8.1) | schlägt `new PDO(...)` fehl, kann das Passwort als Argument im Stacktrace stehen. `api.php` loggt Datenbankfehler deshalb seit Phase 1 nur mit `getMessage()`, ohne Stacktrace ✅. | Verbindungsfehler selbst abfangen und nur `getMessage()` loggen. Ab PHP 8.2 wird das Passwort-Argument automatisch ausgeblendet. |
 | **`cache/` nicht beschreibbar** | der Cache kann nicht geschrieben werden, bei jedem Request wird neu gesucht | Warnung ins Log. Mit `automatischSuchen = false` muss nur das CLI-Werkzeug schreiben dürfen. |
 
 ### Sonderfälle
@@ -1095,10 +1146,10 @@ Jeder Kunde, der den SecurityCore nutzt, bekommt einen eigenen **geheimen Schlü
     ],
 
     'kunden' => [                            // Schlüssel nur als SHA-256-Hash, in der .env
-        'autohaus-mueller' => ['schluessel' => getenv('KEY_MUELLER_HASH'), 'rolle' => 'leser'],
-        'werkstatt-nord'   => ['schluessel' => getenv('KEY_NORD_HASH'),    'rolle' => 'werkstatt'],
-        'verwaltung'       => ['schluessel' => getenv('KEY_ADMIN_HASH'),   'rolle' => 'admin'],
-        'alter-kunde'      => ['schluessel' => getenv('KEY_ALT_HASH'),     'rolle' => 'leser', 'aktiv' => false],
+        'autohaus-mueller' => ['schluessel' => $env['KEY_MUELLER_HASH'], 'rolle' => 'leser'],
+        'werkstatt-nord'   => ['schluessel' => $env['KEY_NORD_HASH'],    'rolle' => 'werkstatt'],
+        'verwaltung'       => ['schluessel' => $env['KEY_ADMIN_HASH'],   'rolle' => 'admin'],
+        'alter-kunde'      => ['schluessel' => $env['KEY_ALT_HASH'],     'rolle' => 'leser', 'aktiv' => false],
     ],
 ],
 ```
@@ -1131,7 +1182,7 @@ curl -H "X-MyEndPoint-Key: mep1.eyJr…" http://localhost/MyEndPoint/api.php/fah
 
 ```php
 'token' => [
-    'secret'      => getenv('TOKEN_SECRET'),   // Pflicht, mindestens 32 Zeichen, kein Standardwert
+    'secret'      => $env['TOKEN_SECRET'],   // Pflicht, mindestens 32 Zeichen, kein Standardwert
     'gueltigkeit' => 8 * 3600,                 // Sekunden
     'nurToken'    => true,                     // Schlüssel nur noch bei /_login annehmen
 ],
@@ -1237,7 +1288,7 @@ S1  Fundament
 | **S5** | `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`, Sperre über Config | mittel |
 | **S6** | `requestLimit` (wenn benötigt), `audit` | mittel |
 
-Die Anmeldung mit Benutzername und Passwort aus der heutigen `api.php` (`zugangsdaten()`, `anmelden()`, `benutzer.sql`) wird **nicht** übernommen. Kundenschlüssel und Token ersetzen sie.
+Die Anmeldung mit Benutzername und Passwort aus der früheren `api.php` (`zugangsdaten()`, `anmelden()`, `benutzer.sql`) ist mit Phase 1 entfernt und wird **nicht** übernommen. Kundenschlüssel und Token ersetzen sie.
 
 ---
 
@@ -1474,16 +1525,18 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 | SQL-Injection über Tabellen-/Spaltennamen | nur aus `RESSOURCEN` bzw. dem Schema, zusätzlich in Backticks |
 | Zugriff auf beliebige Tabellen | Whitelist `RESSOURCEN` |
 | Datensätze mit kaputten Verweisen | Prüfung beim Speichern und Löschen |
+| falsche Datentypen, zu lange Texte, Zahlen außerhalb des Bereichs | `TypeCaster` prüft jede Eingabe vor der Datenbank |
 | HTML-Fehlerseiten | jede Exception wird zu einer JSON-Antwort |
+| Zugangsdaten über das Web abrufbar | `config/.htaccess` (`Require all denied`), Root-`.htaccess` sperrt `config/`, `src/`, `bin/`, `cache/`, `vendor/` und versteckte Pfade (`.git`, `.idea`, `.env`) |
 
 ### Was vor dem Einsatz außerhalb von localhost geändert werden muss
 
-- [ ] **`API_DEBUG` steht auf `true`.** Damit gehen SQL-Fehlermeldungen an den Client. Standard muss `false` sein, einschalten nur über `.env`.
-- [ ] **Datenbank-Benutzer `root` ohne Passwort.** Eigenen Benutzer anlegen, der in `fahrzeugverwaltung` nur `SELECT, INSERT, UPDATE, DELETE` darf.
-- [ ] **Zugangsdaten stehen im Code.** Sie gehören in `config/.env` und damit nicht ins Repo.
-- [ ] **Stacktraces im Log** (`error_log((string) $e)`): Unter PHP 8.1 kann bei einem fehlgeschlagenen Verbindungsaufbau das Datenbank-Passwort darin stehen. PHP 8.2+ verwenden und Verbindungsfehler im `ConnectionManager` abfangen.
-- [ ] **`Access-Control-Allow-Origin: *`.** Erlaubte Adressen in der Config festlegen. Ohne Anmeldung kann sonst jede Webseite, die ein Nutzer im internen Netz öffnet, per JavaScript Daten der API lesen und ändern.
-- [ ] **`.idea/` ist eingecheckt.** In die `.gitignore` aufnehmen.
+- [x] ~~**`API_DEBUG` steht auf `true`.**~~ Standard ist jetzt aus, eingeschaltet wird nur über `API_DEBUG=1` in der `.env`.
+- [ ] **Datenbank-Benutzer `root` ohne Passwort.** Eigenen Benutzer anlegen, der in `fahrzeugverwaltung` nur `SELECT, INSERT, UPDATE, DELETE` darf, und in `config/.env` eintragen.
+- [x] ~~**Zugangsdaten stehen im Code.**~~ Sie stehen in `config/.env` (nicht im Git, per Web gesperrt).
+- [x] ~~**Stacktraces im Log.**~~ Bei Datenbankfehlern loggt `api.php` nur die Meldung, ohne Stacktrace – so steht das Passwort auch unter PHP 8.1 nicht im Log. Im `ConnectionManager` (Phase 2) wird der Verbindungsaufbau zusätzlich selbst abgefangen.
+- [x] ~~**`Access-Control-Allow-Origin: *`.**~~ Nur Adressen aus `cors.erlaubteUrspruenge` bekommen CORS-Header (mit `Vary: Origin`).
+- [x] ~~**`.idea/` ist eingecheckt.**~~ Aus dem Repo genommen und in der `.gitignore`.
 
 ### Geplante Schutzmaßnahmen der 2.0
 
@@ -1539,16 +1592,18 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 
 ### Version 2.0
 
-**Phase 1: Aufräumen und Grundlage**
-- [ ] **Pflicht-Anmeldung und Rollen entfernen:** `zugangsdaten()`, `anmelden()`, `authDb()`, `AUTH_*`, `TBL_BENUTZER`, `ROLLEN`, Prüfung in 6d, Block `angemeldet` in der Übersicht. Die Rollen-Idee kommt später optional im SecurityCore zurück (S4).
-- [ ] `client/index.php` ohne `Authorization`-Header, `openapi.yaml` ohne `BasicAuth`
-- [ ] `benutzer.sql` entfernen
-- [ ] SQL-Dump der Datenbank `fahrzeugverwaltung` ins Repo
-- [ ] `.gitignore` (`.idea/`, `config/.env`, `cache/`)
-- [ ] `API_DEBUG` standardmäßig aus, Zugangsdaten in `.env`
-- [ ] `composer.json` mit PSR-4-Autoloading
-- [ ] Konstanten → `config/gateway.php` + Prüfung beim Start
-- [ ] Mindestversion PHP 8.2 festlegen (oder Stacktraces bei Verbindungsfehlern nicht loggen)
+**Phase 1: Aufräumen und Grundlage** ✅
+- [x] **Pflicht-Anmeldung und Rollen entfernen:** `zugangsdaten()`, `anmelden()`, `authDb()`, `AUTH_*`, `TBL_BENUTZER`, `ROLLEN`, Prüfung in 6d, Block `angemeldet` in der Übersicht. Die Rollen-Idee kommt später optional im SecurityCore zurück (S4).
+- [x] `client/index.php` ohne `Authorization`-Header, `openapi.yaml` ohne `BasicAuth`
+- [x] `benutzer.sql` entfernen
+- [x] ~~SQL-Dump der Datenbank `fahrzeugverwaltung` ins Repo~~ entfällt: Die API arbeitet mit jeder Tabellenstruktur und liest Felder und Typen selbst aus der Datenbank.
+- [x] `.gitignore` (`.idea/`, `config/.env`, `cache/`, `vendor/`), `.idea/` aus dem Repo genommen
+- [x] `API_DEBUG` standardmäßig aus, Zugangsdaten in `.env`
+- [x] `composer.json` mit PSR-4-Autoloading (`Gateway\` → `src/`); ohne Composer lädt `api.php` die Klassen selbst
+- [x] Konstanten → `config/gateway.php` + Prüfung beim Start (`ConfigLoader`, `ConfigValidator`)
+- [x] PHP 8.2 empfohlen, 8.1 läuft: Datenbankfehler werden ohne Stacktrace geloggt
+- [x] **Datentypen aus der Datenbank** (`Mapping\TypeCaster`, vorgezogen aus Phase 2): Grenzen in der Übersicht, jede Eingabe vor der Datenbank prüfen und umwandeln, Dezimalkomma, Datum `TT.MM.JJJJ`
+- [x] `config/` und interne Ordner per `.htaccess` für das Web gesperrt, CORS nur für erlaubte Adressen
 
 **Phase 2: Zerlegen in Klassen (Verhalten bleibt gleich)**
 - [ ] **`ConnectionManager` + `PdoConnector` ersetzen `db()`** (erster Schritt, der Rest von `api.php` läuft unverändert weiter). Verbindungsfehler → `503`.

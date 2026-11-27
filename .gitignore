@@ -1,0 +1,9 @@
+# Editor-Einstellungen (PhpStorm)
+.idea/
+
+# Zugangsdaten – Vorlage ist config/.env.example
+config/.env
+
+# Erzeugte Dateien
+cache/
+vendor/
