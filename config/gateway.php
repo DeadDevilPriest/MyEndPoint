@@ -27,7 +27,12 @@ return [
     'verbindungen' => [
         'fahrzeuge' => [
             'treiber' => 'pdo',
-            'dsn'     => 'mysql:host=127.0.0.1;dbname=fahrzeugverwaltung;charset=utf8mb4',
+            // Die Teile des DSN kommen aus config/.env – fehlt ein Wert, gilt der Standard dahinter.
+            'dsn'     => sprintf('mysql:host=%s;port=%s;dbname=%s;charset=%s',
+                $env['DB_HOST']    ?? '127.0.0.1',
+                $env['DB_PORT']    ?? '3306',
+                $env['DB_NAME']    ?? 'fahrzeugverwaltung',
+                $env['DB_CHARSET'] ?? 'utf8mb4'),
             'user'    => $env['DB_USER'] ?? 'root',
             'pass'    => $env['DB_PASS'] ?? '',
         ],

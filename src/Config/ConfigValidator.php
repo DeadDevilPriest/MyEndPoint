@@ -50,8 +50,12 @@ final class ConfigValidator
                 $fehler[] = "verbindungen.$name: Treiber \"" . self::text($treiber) . '" gibt es in Version 1 nicht (nur: '
                           . implode(', ', self::TREIBER) . ').';
             }
-            if (!is_string($verbindung['dsn'] ?? null) || $verbindung['dsn'] === '') {
+            $dsn = $verbindung['dsn'] ?? null;
+            if (!is_string($dsn) || $dsn === '') {
                 $fehler[] = "verbindungen.$name: dsn fehlt.";
+            } elseif (str_starts_with($dsn, 'mysql:') && !preg_match('/(^mysql:|;)\s*(host|unix_socket)=/', $dsn)) {
+                // "mysql:127.0.0.1;dbname=…" – ohne host= erkennt PDO den Server nicht
+                $fehler[] = "verbindungen.$name: dsn braucht host=…, z. B. mysql:host=127.0.0.1;dbname=…";
             }
         }
 

@@ -598,7 +598,7 @@ BEISPIEL
 | `404` bei `/api/fahrzeuge`, aber `api.php/fahrzeuge` geht | `.htaccess` wird nicht beachtet | in Apache `mod_rewrite` aktivieren und `AllowOverride All` setzen, oder `api.php/…` benutzen |
 | `500` „Konfiguration fehlerhaft“ mit „config/.env fehlt“ | Zugangsdaten-Datei fehlt | `config/.env.example` nach `config/.env` kopieren und `DB_USER`/`DB_PASS` eintragen |
 | `500` „Konfiguration fehlerhaft“ ohne Details | Fehler in `config/gateway.php` | `API_DEBUG=1` in `config/.env` setzen, dann steht der Grund in der Antwort (sonst im Server-Log) |
-| `500` mit „Unknown database“ bzw. „Table … doesn't exist“ | Datenbank oder Tabelle aus `config/gateway.php` gibt es nicht | `dbname` unter `verbindungen` und `quelle` unter `ressourcen` prüfen |
+| `500` mit „Unknown database“ bzw. „Table … doesn't exist“ | Datenbank oder Tabelle gibt es nicht | `DB_NAME` (und `DB_HOST`) in `config/.env` sowie `quelle` unter `ressourcen` in `config/gateway.php` prüfen |
 | Neue Spalte taucht nicht auf | Schema-Cache ist veraltet 🔜 | `php bin/schema-aktualisieren.php` |
 | Neues Format bzw. neue Datenbank wird nicht erkannt 🔜 | Baustein-Cache veraltet, Abhängigkeit fehlt oder Datei falsch benannt | `php bin/bausteine-aktualisieren.php`, danach `php bin/config-pruefen.php` (nennt den Grund) |
 | `503` „Datenbank nicht erreichbar“ 🔜 | Datenbankserver läuft nicht oder Zugangsdaten falsch | MySQL in XAMPP starten, Zugangsdaten in `config/.env` prüfen |

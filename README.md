@@ -66,8 +66,8 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 **Voraussetzung:** PHP 8.1 oder neuer (8.2+ empfohlen), MariaDB/MySQL, Apache mit `mod_rewrite` (bei XAMPP aktiv).
 
 1. Den Ordner nach `htdocs/MyEndPoint` kopieren (der Ordnername ist frei wählbar).
-2. `config/.env.example` nach `config/.env` kopieren und die Zugangsdaten zur Datenbank eintragen (XAMPP: `DB_USER=root`, `DB_PASS=` leer). Zum Entwickeln `API_DEBUG=1` setzen.
-3. In `config/gateway.php` unter `ressourcen` eintragen, welche Tabellen die API anbieten soll, und unter `verbindungen` die Datenbank (`dbname=…`).
+2. `config/.env.example` nach `config/.env` kopieren und die Datenbank eintragen: Server und Name (`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_CHARSET`) sowie die Zugangsdaten (XAMPP: `DB_USER=root`, `DB_PASS=` leer). Daraus baut `config/gateway.php` den DSN; fehlt ein Wert, gilt der Standard (`127.0.0.1`, `3306`, `fahrzeugverwaltung`, `utf8mb4`). Zum Entwickeln `API_DEBUG=1` setzen.
+3. In `config/gateway.php` unter `ressourcen` eintragen, welche Tabellen die API anbieten soll.
    > Ein SQL-Dump ist nicht nötig: Die API arbeitet mit **jeder** Tabellenstruktur. Spalten, Datentypen, Grenzen, Pflichtfelder und Verweise liest sie selbst aus der Datenbank. Das Beispiel in `config/gateway.php` erwartet die Datenbank `fahrzeugverwaltung` mit den Tabellen `fahrzeuge`, `fahrzeugtypen`, `fahrzeugarten`, `treibstoffe` und `fahrzeughalter`.
 4. Ausprobieren:
 
@@ -451,7 +451,7 @@ Seit Phase 1 stehen die früheren Konstanten aus `api.php` in `config/gateway.ph
 
 | früher in `api.php` | jetzt | |
 |---|---|---|
-| `DB2_DSN`, `DB2_USER`, `DB2_PASS` | `verbindungen` + `.env` (`DB_USER`, `DB_PASS`) | ✅ |
+| `DB2_DSN`, `DB2_USER`, `DB2_PASS` | `verbindungen` + `.env`: der DSN wird aus `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_CHARSET` gebaut, dazu `DB_USER`, `DB_PASS` | ✅ |
 | `RESSOURCEN` | `ressourcen` mit `verbindung` und `quelle` | ✅ |
 | `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | `grenzen` | ✅ |
 | `API_DEBUG` | `debug`, eingeschaltet mit `API_DEBUG=1` in der `.env` (Standard: aus) | ✅ |
@@ -606,7 +606,7 @@ Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 
 Ist etwas falsch, antwortet die API mit `500` und schreibt den Grund ins Log. Manuell prüfen: `php bin/config-pruefen.php` 🔜.
 
-**Version 1 prüft schon** (`src/Config/ConfigValidator.php`): `config/.env` vorhanden, jede Verbindung mit Treiber `pdo` und `dsn`, jede Ressource mit existierender Verbindung und `quelle`, Ressourcennamen (Kleinbuchstaben, nicht mit `_`), `grenzen` (1 ≤ `limitStandard` ≤ `limitMaximum`), Adressen in `cors.erlaubteUrspruenge`, alle Ressourcen auf **einer** Verbindung. Die Details stehen mit `API_DEBUG=1` auch in der Antwort. Die übrigen Punkte oben kommen mit den jeweiligen Bausteinen.
+**Version 1 prüft schon** (`src/Config/ConfigValidator.php`): `config/.env` vorhanden, jede Verbindung mit Treiber `pdo` und `dsn` (bei MySQL mit `host=`), jede Ressource mit existierender Verbindung und `quelle`, Ressourcennamen (Kleinbuchstaben, nicht mit `_`), `grenzen` (1 ≤ `limitStandard` ≤ `limitMaximum`), Adressen in `cors.erlaubteUrspruenge`, alle Ressourcen auf **einer** Verbindung. Die Details stehen mit `API_DEBUG=1` auch in der Antwort. Die übrigen Punkte oben kommen mit den jeweiligen Bausteinen.
 
 ---
 
