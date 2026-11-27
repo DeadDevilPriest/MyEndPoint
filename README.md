@@ -41,7 +41,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Zugriffskontrolle | **optionaler SecurityCore, standardmäßig aus** (siehe [SecurityCore](#securitycore-optional)) | ohne Konfiguration offen wie bisher geplant, bei Bedarf pro Kunde absicherbar |
 | Grundschutz | **immer aktiv, nicht abschaltbar** (Prepared Statements, Whitelist, XXE aus, Größenlimit …) | kostet praktisch nichts und schützt vor kaputten oder böswilligen Eingaben, egal wer sie schickt |
 | Geltungsbereich | **Variante C: global + pro Ressource zusätzlich**. Ressourcen können strenger sein, aber nie offener als global. | neue Ressourcen sind automatisch mindestens global geschützt |
-| Identität | **Kundenschlüssel in einem frei benennbaren HTTP-Header**, optional gegen ein **Token** tauschbar (`POST /_login`) | kein Benutzername/Passwort nötig, die Rolle kommt immer aus der Config und nie vom Client |
+| Identität | **Kundenschlüssel in einem frei benennbaren HTTP-Header**, optional gegen ein **Token** tauschbar (`POST /_login`) | kein Benutzername/Passwort nötig, Rolle und Verbindung kommen immer aus der Config und nie vom Client |
 | Anmeldung mit Benutzername/Passwort (`basic`) | **entfällt** | durch Kundenschlüssel und Token ersetzt |
 | Rollen | **nur mit SecurityCore**, Rechte pro Ressource (`crud`) | ohne SecurityCore gibt es niemanden, dem eine Rolle zugeordnet wäre |
 | Hilfe bei aktiver Sicherheit | **zeigt nur die Befehle, die die Rolle benutzen darf** | jeder Kunde sieht seine eigene, passende Doku, keine Sicherheitsdetails |
@@ -49,7 +49,7 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | VMs / Container | **nicht Teil des Projekts** | die API läuft z. B. in XAMPP, wie sie bereitgestellt wird, ist offen |
 | Hilfe | **eingebaute Hilfe-Befehle** (`_hilfe`) + [Benutzerhandbuch](HANDBUCH.md) | die API erklärt sich selbst, immer passend zur Datenbank |
 | Datenverarbeitung | **alles in Arrays**, kein Streaming | einfache Schnittstellen, leicht zu testen |
-| Backend-Wahl | **nur über die Konfiguration** | ein Client kann nie bestimmen, wo Daten landen |
+| Ziel der Daten | **Jeder Kunde arbeitet in seiner eigenen Datenbank.** Das Ziel ergibt sich aus seiner Identität (Kundenschlüssel bzw. Token → Verbindung). Die Zuordnung legt **nur der Betreiber** in der Config fest, **nie** der Client über einen Host oder DSN (siehe [Eigene Datenbank pro Kunde](#eigene-datenbank-pro-kunde)). | universell für viele Kunden, ohne dass die API zum offenen Datenbank-Proxy wird (SSRF). Datenbank-Zugangsdaten bleiben auf dem Server, jede Verbindung nutzt einen eigenen DB-Benutzer ohne Admin-Rechte. |
 | Datenstruktur | **nur flache Datensätze**, Verweise als IDs | jedes Format kann jede Zeile abbilden, auch CSV |
 | Felder | **automatisch aus der Datenbank**, Config nur für Ausnahmen | so wie `api.php` es heute schon macht |
 | Verbindungen | **ein `ConnectionManager`** baut alle Verbindungen auf, erst bei Bedarf, höchstens eine pro Request. Die API spricht nur mit dem Treiber. | ein Ort für Zugangsdaten und Optionen, Backends austauschbar, testbar |
@@ -168,7 +168,7 @@ Ein neues Format braucht genau **einen** Codec, ein neues Backend genau **einen*
 | **FieldMapper** | Namen angleichen, Ausnahmen aus der Config, Prüfung, Verweise | Formate, Speicherart |
 | **ConnectionManager** | Verbindungen aufbauen, erst bei Bedarf, eine pro Request | Abfragen, Formate, HTTP |
 | **PluginFinder** | neue Codecs, Connectoren und Wächter automatisch finden | was die Bausteine tun |
-| **SecurityCore** 🔜 | optional: wer anfragt (Kunde, Rolle) und ob er darf | Formate, Speicherart |
+| **SecurityCore** 🔜 | optional: wer anfragt (Kunde, Rolle), ob er darf und welche Verbindung er nutzt | Formate, Speicherart |
 
 Details: [Verbindungen und Bausteine](#verbindungen-und-bausteine), [SecurityCore](#securitycore-optional).
 
@@ -191,7 +191,8 @@ Die Konfiguration muss deshalb nur Ausnahmen enthalten: versteckte Felder, Umben
  2. Router                    api.php/<ressource>/<id?>             → 404
  3. Methode bestimmen         echte Methode oder _method/Override   → 400
  4. SecurityCore              nur wenn global oder für die Ressource
-                              aktiv: Kunde erkennen, Rolle prüfen   → 401 / 403 / 404
+                              aktiv: Kunde erkennen, Rolle prüfen,  → 401 / 403 / 404
+                              Verbindung des Kunden wählen
  5. Hilfe?                    _hilfe im Pfad oder ?_hilfe           → Hilfe ausgeben
                               (bei aktiver Sicherheit nach Rolle gefiltert), fertig
  6. Aktion erlaubt?           optionale Einschränkung pro Ressource → 405
@@ -602,6 +603,7 @@ Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 - Ist der SecurityCore global oder für eine Ressource aktiv: Alle genannten Wächter wurden gefunden, ihre Abhängigkeiten sind erfüllt (z. B. `rollen` braucht eine Identität), und ihre Einstellungen sind vollständig (Header-Name, Schlüssel-Hashes, Token-Secret ≥ 32 Zeichen). **Sonst startet die API nicht** (fail closed).
 - `aktionen` besteht nur aus `c`, `r`, `u`, `d`.
 - Verweise zeigen auf existierende Ressourcen.
+- Jede `verbindung` eines Kunden (SecurityCore) existiert in `verbindungen`.
 - Kein Ressourcenname beginnt mit `_` (reserviert für `_hilfe`, `_openapi` …).
 
 Ist etwas falsch, antwortet die API mit `500` und schreibt den Grund ins Log. Manuell prüfen: `php bin/config-pruefen.php` 🔜.
@@ -1164,6 +1166,44 @@ curl -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/fahrze
 - **Kunden sperren**: `'aktiv' => false` oder Eintrag löschen. Das wirkt sofort, auch für bereits ausgegebene Tokens.
 - **Ist der SecurityCore aus, wird der Header ignoriert.**
 
+### Eigene Datenbank pro Kunde
+
+Soll jeder Kunde in seiner eigenen Datenbank arbeiten, ordnet der **Betreiber** ihm in der Config eine Verbindung zu (`verbindung`). Der Kunde bestimmt sein Ziel damit über seine Identität, ohne Host, DSN oder Datenbank-Passwort mitzuschicken:
+
+```php
+'verbindungen' => [
+    'fahrzeuge' => [ /* Standard, siehe Konfiguration */ ],
+    'mueller'   => [
+        'treiber' => 'pdo',
+        'dsn'     => 'mysql:host=db.mueller.local;dbname=fuhrpark;charset=utf8mb4',
+        'user'    => $env['MUELLER_DB_USER'],      // eigener DB-Benutzer, kein root
+        'pass'    => $env['MUELLER_DB_PASS'],
+    ],
+],
+
+'sicherheit' => [
+    'aktiv'    => true,
+    'waechter' => ['kundenschluessel', 'token', 'rollen'],
+    'kunden'   => [
+        'autohaus-mueller' => ['schluessel' => $env['KEY_MUELLER_HASH'], 'rolle' => 'leser', 'verbindung' => 'mueller'],
+        'verwaltung'       => ['schluessel' => $env['KEY_ADMIN_HASH'],   'rolle' => 'admin'],   // ohne verbindung: Standard
+    ],
+],
+```
+
+```bash
+curl -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/fahrzeuge   # → Daten aus fuhrpark bei Müller
+```
+
+- **Nur der Betreiber ordnet zu.** Die Verbindung steht beim Kunden in der Config, die Zugangsdaten in der `.env`. Host, DSN oder Datenbankname vom Client werden **nie** angenommen, weder pro Request noch zum Selbst-Eintragen. Sonst könnte jeder die API auf beliebige Server im internen Netz richten (SSRF), sie zum Durchprobieren fremder Passwörter nutzen, und Datenbank-Passwörter gingen mit jeder Anfrage über das Netz.
+- **Eigener DB-Benutzer pro Verbindung**, der nur in der Datenbank des Kunden `SELECT, INSERT, UPDATE, DELETE` darf. Kein `root`. So bleibt der Kunde auch auf Datenbankebene ein Nutzer.
+- **Gleiche Ressourcen, andere Datenbank:** Die Whitelist `ressourcen` gilt für alle Kunden. Mit `verbindung` wird jede Ressource in der Datenbank **des Kunden** gesucht (`quelle` = Tabellenname dort). Felder, Datentypen und Verweise liest die API wie immer aus dieser Datenbank, deshalb funktioniert sie mit jeder Kundendatenbank. Gibt es eine Tabelle beim Kunden nicht, antwortet die API ihm mit `404`.
+- **Ohne `verbindung`** nutzt der Kunde die Verbindung, die bei der Ressource steht.
+- **Mehrere Backends pro Kunde:** `verbindung` darf auch eine Zuordnung sein, z. B. `['fahrzeuge' => 'mueller', 'archiv' => 'mueller-archiv']` (Standardverbindung → Verbindung des Kunden).
+- **Token:** Ein Token (`POST /_login`) gehört zum Kunden, damit gilt auch seine Verbindung. Wird der Kunde gesperrt oder einer anderen Verbindung zugeordnet, wirkt das sofort.
+- **Prüfung beim Start:** Jede `verbindung` eines Kunden muss in `verbindungen` existieren, sonst startet die API nicht (fail closed).
+- **Ohne SecurityCore** gibt es keine Kunden: Alle Anfragen nutzen die Verbindung der Ressource. Wer ohne SecurityCore mehrere Datenbanken braucht, setzt die API mehrfach auf, jede mit eigener `config/.env`.
+
 ### Token (`POST /_login`)
 
 Optionaler Wächter `token`: Der Kunde tauscht seinen Schlüssel **einmal** gegen ein Token mit Ablaufzeit und schickt danach nur noch das Token.
@@ -1570,7 +1610,7 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 | Rollen ohne SecurityCore | ohne Identität keine Rolle | `aktionen` pro Ressource für alle gleich |
 | VMs / Container starten oder verwalten | nicht Teil des Projekts | Bereitstellung außerhalb der API |
 | Streaming großer Datenmengen | Einfachheit | Seiten mit `limit`/`offset` |
-| Backend-Wahl per Request | Sicherheit | Backend in der Config |
+| Host, DSN oder Datenbank vom Client (pro Request oder selbst eingetragen) | SSRF: die API würde sich mit beliebigen Servern im internen Netz verbinden; Datenbank-Passwörter in jeder Anfrage | Betreiber ordnet jedem Kunden seine Verbindung zu ([Eigene Datenbank pro Kunde](#eigene-datenbank-pro-kunde)) |
 | Verschachtelte Daten, eingebettete Verweise | jedes Format soll jede Zeile abbilden | IDs + zweiter Request |
 | SQL als Eingabe | Sicherheit | JSON, Formular, CSV, XML |
 | Joins über mehrere Ressourcen | folgt aus „nur flach“ | Datenbank-View als `quelle` |
@@ -1607,6 +1647,7 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 
 **Phase 2: Zerlegen in Klassen (Verhalten bleibt gleich)**
 - [ ] **`ConnectionManager` + `PdoConnector` ersetzen `db()`** (erster Schritt, der Rest von `api.php` läuft unverändert weiter). Verbindungsfehler → `503`.
+- [ ] `ConnectionManager` mit **mehreren Verbindungen** (Ressourcen auf verschiedenen Verbindungen; Voraussetzung für [Eigene Datenbank pro Kunde](#eigene-datenbank-pro-kunde)). Die Einschränkung „eine Verbindung für alle Ressourcen“ im `ConfigValidator` fällt weg.
 - [ ] `Response`, `ErrorHandler`, `Router`, `Request`
 - [ ] `PdoDriver` mit `schema()` + Schema-Cache, holt die Verbindung beim `ConnectionManager`
 - [ ] `FieldMapper`, `ReferenceChecker`
@@ -1640,6 +1681,7 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 - [ ] **S1** Fundament: `Waechter`-Interface, `Kontext`/`Principal`, Einhängen im Kernel (aus = nichts laden), Variante C, Config-Prüfung (fail closed), `401`/`403`/`429`
 - [ ] **S2** `ip` (mit Proxy-Regel), `https`, `nurLesen`
 - [ ] **S3** `kundenschluessel`: konfigurierbarer Header + Präfix, Kunden mit Hash, `aktiv`-Schalter, CORS-Header, `Vary`, `bin/schluessel-erzeugen.php`
+- [ ] **S3b** **Eigene Datenbank pro Kunde:** `kunden.<name>.verbindung` (nur vom Betreiber vergeben, auch als Zuordnung für mehrere Backends), Ressourcen in der Datenbank des Kunden, `404` wenn die Tabelle dort fehlt, Prüfung beim Start. Setzt S3 und den `ConnectionManager` mit mehreren Verbindungen voraus.
 - [ ] **S4** `rollen`: Rechte pro Ressource, Schnittmenge mit `aktionen`, `404`/`403`, Hilfe, Übersicht und `/_openapi` nach Rolle filtern
 - [ ] **S5** `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`
 - [ ] **S6** `requestLimit` (wenn benötigt), `audit`

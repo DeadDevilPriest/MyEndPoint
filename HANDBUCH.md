@@ -204,6 +204,8 @@ Ist der SecurityCore aktiv, zeigt die Hilfe **nur die Befehle, die deine Rolle b
 
 Der Header-Name wird vom Betreiber festgelegt und kann bei jeder Installation anders heißen. Fehlt dir die Angabe, liefert `GET api.php/_hilfe` ohne Schlüssel eine `401`-Antwort, die den richtigen Header-Namen nennt.
 
+**Deine Datenbank:** Hat der Betreiber dir eine eigene Datenbank zugeordnet, landen alle deine Anfragen automatisch dort. Dein Schlüssel bzw. Token bestimmt das Ziel. Server, Datenbankname oder Datenbank-Passwort schickst du **nie** mit, die API würde sie auch nicht annehmen. Für eine andere Datenbank wendest du dich an den Betreiber.
+
 ### Schlüssel mitschicken
 
 ```bash
