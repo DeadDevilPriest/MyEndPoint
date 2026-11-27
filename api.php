@@ -48,8 +48,11 @@ declare(strict_types=1);
  *
  *  Konfiguration: config/gateway.php (Ressourcen, Verbindung, Grenzen, CORS),
  *  Zugangsdaten in config/.env (Vorlage: config/.env.example, nicht im Git).
- *  Eine Anmeldung gibt es in Version 1 nicht – Zugriffskontrolle kommt optional
- *  mit dem SecurityCore (siehe README).
+ *  Anmeldung (optional, Standard: aus – sicherheit.aktiv in config/gateway.php):
+ *    POST api.php/_login  mit login (Benutzername oder E-Mail) und passwort → Token
+ *    danach jede Anfrage mit dem Header  Authorization: Bearer <token>
+ *  Die Konten stehen in der Login-Datenbank (LOGIN_DB_* in config/.env; ohne
+ *  LOGIN_DB_NAME dieselbe Datenbank wie die Daten). Klassen: src/Security/.
  *
  *  Antwort immer JSON. Bei Fehlern: {"fehler": "...", "details": [...]}
  *  Voraussetzung: PHP 8.1 oder neuer (8.2 empfohlen).
@@ -65,6 +68,8 @@ declare(strict_types=1);
  *    LIMIT_STANDARD  so viele Datensätze liefert eine Liste ohne ?limit=
  *    LIMIT_MAXIMUM   mehr gibt es auch mit ?limit= nicht
  *    CORS_URSPRUENGE Webseiten, die die API per JavaScript aufrufen dürfen
+ *    SICHERHEIT      Einstellungen der Anmeldung (aktiv, login, header, token)
+ *    LOGIN_VERBINDUNG dsn, user, pass der Login-Datenbank (nur bei aktiver Anmeldung)
  */
 
 // Klassen aus src/ laden (PSR-4: Gateway\Mapping\TypeCaster → src/Mapping/TypeCaster.php).
@@ -85,6 +90,9 @@ if (is_file(__DIR__ . '/vendor/autoload.php')) {
 use Gateway\Config\ConfigLoader;
 use Gateway\Config\ConfigValidator;
 use Gateway\Mapping\TypeCaster;
+use Gateway\Security\KlartextPasswort;
+use Gateway\Security\Login;
+use Gateway\Security\Token;
 
 // MySQL-Fehler, die der Client verursacht hat → passender Statuscode statt 500.
 // Schlüssel = MySQL-Fehlernummer
@@ -155,6 +163,22 @@ function db(): PDO
 
     // Zugangsdaten aus config/gateway.php bzw. config/.env
     $pdo = new PDO(DB_VERBINDUNG['dsn'], DB_VERBINDUNG['user'], DB_VERBINDUNG['pass'], [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ]);
+    return $pdo;
+}
+
+// Verbindung zur Login-Datenbank. Ist keine eigene konfiguriert (LOGIN_DB_NAME leer),
+// ist es dieselbe Datenbank wie die Daten – dann wird die Verbindung von db() mitbenutzt.
+function loginDb(): PDO
+{
+    static $pdo = null;
+    if ($pdo instanceof PDO) return $pdo;
+    if (LOGIN_VERBINDUNG === DB_VERBINDUNG) return $pdo = db();
+
+    $pdo = new PDO(LOGIN_VERBINDUNG['dsn'], LOGIN_VERBINDUNG['user'], LOGIN_VERBINDUNG['pass'], [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
@@ -286,6 +310,96 @@ function primaerschluessel(string $tabelle): string
         fehler(500, "Tabelle \"$tabelle\" braucht genau einen Primärschlüssel für Zugriffe per ID.");
     }
     return (string) $pk[0];
+}
+
+
+/* ── 3b) ANMELDUNG (nur wenn sicherheit.aktiv) ────────────────────
+ *  Passwort wird nur bei POST /_login geprüft (langsam, absichtlich).
+ *  Danach weist der Token aus (schnell: HMAC + ein SELECT pro Anfrage).
+ */
+
+// Liest einen Request-Header – egal, wie der Webserver ihn an PHP weiterreicht
+function headerLesen(string $name): string
+{
+    $schluessel = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+    $wert = $_SERVER[$schluessel] ?? $_SERVER['REDIRECT_' . $schluessel] ?? null;
+    if ($wert === null && function_exists('getallheaders')) {
+        foreach (getallheaders() as $kopf => $inhalt) {
+            if (strcasecmp((string) $kopf, $name) === 0) {
+                $wert = $inhalt;
+                break;
+            }
+        }
+    }
+    return trim((string) $wert);
+}
+
+// Login-Tabelle oder -Datenbank fehlt? Dann eine verständliche Meldung statt nur "Serverfehler".
+function loginFehler(PDOException $e): never
+{
+    $nummer = (int) ($e->errorInfo[1] ?? $e->getCode());
+    if (in_array($nummer, [1049, 1054, 1146], true)) {   // Datenbank, Spalte bzw. Tabelle fehlt
+        error_log('Login: ' . $e->getMessage());
+        fehler(500, 'Die Login-Datenbank passt nicht zur Konfiguration: sicherheit.login in config/gateway.php '
+                    . 'und LOGIN_DB_* in config/.env prüfen.', API_DEBUG ? [$e->getMessage()] : []);
+    }
+    throw $e;
+}
+
+// POST api.php/_login – Benutzername oder E-Mail + Passwort prüfen, Token ausgeben
+function anmelden(array $daten): never
+{
+    $login    = is_string($daten['login'] ?? null) ? trim($daten['login']) : '';
+    $passwort = is_string($daten['passwort'] ?? null) ? $daten['passwort'] : '';
+    if ($login === '' || $passwort === '') {
+        fehler(400, 'Zum Anmelden login (Benutzername oder E-Mail) und passwort mitschicken.');
+    }
+
+    $hinweis = [];
+    try {
+        $konto = Login::check(loginDb(), SICHERHEIT['login'], $login, $passwort);
+    } catch (KlartextPasswort $e) {
+        // Hilfe beim Einrichten, nur mit API_DEBUG: Passwort steht im Klartext in der Tabelle
+        $konto   = null;
+        $hinweis = API_DEBUG ? [$e->getMessage() . ' Hash erzeugen: php bin/passwort-hash.php'] : [];
+    } catch (PDOException $e) {
+        loginFehler($e);
+    }
+    if ($konto === null) {
+        fehler(401, 'Anmeldung fehlgeschlagen: Benutzername/E-Mail oder Passwort falsch.', $hinweis);
+    }
+
+    $token = Token::create(['k' => $konto['id'], 'n' => $konto['name']],
+                           SICHERHEIT['token']['secret'], SICHERHEIT['token']['gueltigkeit']);
+    header('Cache-Control: no-store');   // Token nie zwischenspeichern
+    antwort(200, [
+        'token'      => $token['token'],
+        'gueltigBis' => date(DATE_ATOM, $token['gueltigBis']),
+        'benutzer'   => ['name' => $konto['name'], 'email' => $konto['email']],
+    ]);
+}
+
+// Jede andere Anfrage: gültiger Token im Header – und das Konto gibt es noch (gelöscht = sofort gesperrt)
+function angemeldetesKonto(): array
+{
+    $kopf    = headerLesen(SICHERHEIT['header']['name']);
+    $praefix = SICHERHEIT['header']['praefix'] ?? '';
+    $token   = $praefix !== '' && stripos($kopf, $praefix) === 0 ? substr($kopf, strlen($praefix)) : $kopf;
+    $inhalt  = $token !== '' ? Token::verify(trim($token), SICHERHEIT['token']['secret']) : null;
+
+    $konto = null;
+    if ($inhalt !== null && isset($inhalt['k'])) {
+        try {
+            $konto = Login::find(loginDb(), SICHERHEIT['login'], $inhalt['k']);
+        } catch (PDOException $e) {
+            loginFehler($e);
+        }
+    }
+    if ($konto === null) {
+        fehler(401, 'Nicht angemeldet oder Anmeldung abgelaufen. Zuerst POST api.php/_login mit login und passwort, '
+                    . 'dann den Token mitschicken: ' . SICHERHEIT['header']['name'] . ': ' . $praefix . '<token>');
+    }
+    return $konto;
 }
 
 
@@ -641,19 +755,38 @@ define('RESSOURCEN', array_map(fn(array $r) => $r['quelle'], $config['ressourcen
 define('LIMIT_STANDARD', $config['grenzen']['limitStandard']);
 define('LIMIT_MAXIMUM', $config['grenzen']['limitMaximum']);
 define('CORS_URSPRUENGE', array_values($config['cors']['erlaubteUrspruenge'] ?? []));
-unset($config, $verbindung);
+
+// Anmeldung: Einstellungen und Login-Verbindung (die Konstanten enthalten Geheimnisse – nie ausgeben)
+define('SICHERHEIT', ($config['sicherheit'] ?? []) + ['aktiv' => false]);
+if (SICHERHEIT['aktiv']) {
+    $login = $config['verbindungen'][SICHERHEIT['login']['verbindung']];
+    define('LOGIN_VERBINDUNG', [
+        'dsn'  => $login['dsn'],
+        'user' => (string) ($login['user'] ?? ''),
+        'pass' => (string) ($login['pass'] ?? ''),
+    ]);
+}
+unset($config, $verbindung, $login);
 
 // CORS: Nur Webseiten aus cors.erlaubteUrspruenge dürfen die API per JavaScript von einer
 // ANDEREN Adresse aus aufrufen. "*" wäre ohne Anmeldung riskant: Jede Webseite, die jemand
 // im internen Netz öffnet, könnte sonst per JavaScript Daten lesen und ändern.
+// Bei aktiver Anmeldung muss der Token-Header ausdrücklich erlaubt werden.
 $ursprung = $_SERVER['HTTP_ORIGIN'] ?? '';
 if (in_array($ursprung, CORS_URSPRUENGE, true)) {
     header("Access-Control-Allow-Origin: $ursprung");
     header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override');
+    header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override'
+           . (SICHERHEIT['aktiv'] ? ', ' . SICHERHEIT['header']['name'] : ''));
     header('Access-Control-Expose-Headers: Location');
 }
-header('Vary: Origin');   // Antwort hängt vom Origin ab → Caches dürfen sie nicht vermischen
+// Antwort hängt vom Origin (und bei Anmeldung vom Token) ab → Caches dürfen sie nicht vermischen
+if (SICHERHEIT['aktiv']) {
+    header('Vary: Origin, ' . SICHERHEIT['header']['name']);
+    header('Cache-Control: private');
+} else {
+    header('Vary: Origin');
+}
 
 // 6b) Route aus der URL lesen
 //     /MyEndPoint/api.php/fahrzeuge/5  → ['fahrzeuge', '5']
@@ -702,7 +835,21 @@ if ($methode === 'POST') {
 
 $daten = ohneSteuerfelder($daten);
 
-// 6d) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, welche Ressourcen und
+// 6d) Anmeldung (nur wenn sicherheit.aktiv). POST /_login ist immer erreichbar –
+//     sonst könnte sich niemand einen Token holen. Alles andere braucht einen gültigen Token.
+if ($ressource === '_login') {
+    if (!SICHERHEIT['aktiv']) {
+        fehler(404, 'Die Anmeldung ist nicht eingeschaltet (sicherheit.aktiv in config/gateway.php).');
+    }
+    if ($methode !== 'POST' || $id !== null) {
+        header('Allow: POST');
+        fehler(405, 'Anmelden: POST api.php/_login mit login (Benutzername oder E-Mail) und passwort.');
+    }
+    anmelden($daten);
+}
+$konto = SICHERHEIT['aktiv'] ? angemeldetesKonto() : null;   // 401 ohne gültigen Token
+
+// 6e) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, welche Ressourcen und
 //     Felder es gibt, mit Datentyp, Grenzen, Pflichtfeldern und Verweisen
 if ($ressource === '') {
     if ($methode !== 'GET') {
@@ -712,7 +859,8 @@ if ($ressource === '') {
     foreach (RESSOURCEN as $name => $tabelle) {
         $uebersicht[$name] = ['url' => "$apiUrl/$name", 'felder' => spalten($tabelle)];
     }
-    antwort(200, ['ressourcen' => $uebersicht]);
+    antwort(200, ($konto !== null ? ['angemeldet' => ['name' => $konto['name'], 'email' => $konto['email']]] : [])
+               + ['ressourcen' => $uebersicht]);
 }
 
 if (!isset(RESSOURCEN[$ressource])) {
@@ -732,7 +880,7 @@ if ($id === null && in_array($methode, ['PUT', 'PATCH', 'DELETE'], true)) {
     }
 }
 
-// 6e) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
+// 6f) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
 $status = 200;
 
 switch ($methode) {
@@ -776,5 +924,5 @@ switch ($methode) {
         fehler(405, "Methode $methode wird nicht unterstützt.");
 }
 
-// 6f) Antwort ausgeben
+// 6g) Antwort ausgeben
 antwort($status, $ergebnis);

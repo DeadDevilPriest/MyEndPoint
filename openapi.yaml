@@ -11,8 +11,18 @@ info:
     > **Ausprobieren:** Bei jeder Operation Werte eintragen und **Execute** drücken.
     > Die Anfragen gehen wirklich an die API – POST, PUT, PATCH und DELETE ändern die Datenbank.
 
-    Eine Anmeldung gibt es in Version 1 nicht. Zugriffskontrolle kommt optional mit dem SecurityCore
-    (siehe README). Bis dahin die API nur im lokalen Netz betreiben.
+    ## Anmeldung (optional)
+
+    Standardmäßig ist die API offen. Steht in `config/gateway.php` `sicherheit.aktiv` auf `true`, gilt:
+
+    1. **`POST api.php/_login`** mit `login` (Benutzername oder E-Mail) und `passwort` → `token`.
+    2. Jede weitere Anfrage schickt den Token mit: `Authorization: Bearer mep1.…`
+       (hier in der Doku: oben **Authorize** → Token eintragen).
+    3. Ohne gültigen Token antwortet jede Ressource mit `401`. Der Token läuft nach der eingestellten Zeit ab
+       (Standard 8 Stunden); ein gelöschtes Konto ist sofort gesperrt.
+
+    Die Konten stehen in der Login-Datenbank (`LOGIN_DB_*` in `config/.env`, sonst in der Daten-Datenbank),
+    Passwörter nur als Hash von `password_hash()`. Ist die Anmeldung aus, antwortet `/_login` mit `404`.
 
     ## Aufbau der URLs
 
@@ -91,6 +101,7 @@ info:
     | 201 | angelegt |
     | 204 | Antwort auf OPTIONS (CORS-Vorabanfrage) |
     | 400 | ungültige Eingabe (auch falscher Datentyp), ungültiger Filter oder ungültiges JSON |
+    | 401 | nur bei aktiver Anmeldung: kein, falscher oder abgelaufener Token bzw. falsches Passwort bei `/_login` |
     | 404 | Ressource oder Datensatz nicht gefunden |
     | 405 | Methode an dieser Adresse nicht erlaubt |
     | 409 | Konflikt: doppelter Wert oder Eintrag wird noch verwendet |
@@ -117,7 +128,14 @@ servers:
         default: MyEndPoint
         description: Ordner unter htdocs
 
+# Token ist optional: [] = ohne Anmeldung (Standard), Token = mit aktiver Anmeldung
+security:
+  - {}
+  - Token: []
+
 tags:
+  - name: Anmeldung
+    description: 'Nur wenn sicherheit.aktiv in config/gateway.php auf true steht'
   - name: Übersicht
     description: Welche Ressourcen und Felder es gibt
   - name: Fahrzeuge
@@ -132,6 +150,52 @@ tags:
     description: Tabelle `fahrzeughalter`
 
 paths:
+
+  # ── Anmeldung ────────────────────────────────────────────────────
+  /_login:
+    post:
+      tags: [Anmeldung]
+      summary: Anmelden und Token holen
+      description: |
+        Prüft Benutzername bzw. E-Mail und Passwort gegen die Login-Datenbank und gibt einen Token zurück.
+        Den Token bei jeder weiteren Anfrage im Header `Authorization: Bearer <token>` mitschicken.
+        Das Passwort geht nur hier über das Netz.
+      operationId: anmelden
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Anmeldedaten'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Anmeldedaten'
+      responses:
+        '200':
+          description: Angemeldet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Anmeldung'
+        '400':
+          $ref: '#/components/responses/UngueltigeEingaben'
+        '401':
+          description: Benutzername/E-Mail oder Passwort falsch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fehler'
+              example:
+                fehler: 'Anmeldung fehlgeschlagen: Benutzername/E-Mail oder Passwort falsch.'
+        '404':
+          description: Die Anmeldung ist nicht eingeschaltet (sicherheit.aktiv ist false)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fehler'
+        '500':
+          $ref: '#/components/responses/Serverfehler'
 
   # ── Übersicht ────────────────────────────────────────────────────
   /:
@@ -864,6 +928,14 @@ paths:
 
 components:
 
+  # ── Anmeldung (nur wenn sicherheit.aktiv) ────────────────────────
+  securitySchemes:
+    Token:
+      type: http
+      scheme: bearer
+      bearerFormat: mep1
+      description: Token aus `POST /_login` (beginnt mit `mep1.`). Nur nötig, wenn die Anmeldung eingeschaltet ist.
+
   # ── Wiederverwendete Parameter für Listen ────────────────────────
   parameters:
     sort:
@@ -1299,9 +1371,55 @@ components:
           items:
             type: string
 
+    Anmeldedaten:
+      type: object
+      required: [login, passwort]
+      properties:
+        login:
+          type: string
+          description: Benutzername oder E-Mail
+          example: admin@test.com
+        passwort:
+          type: string
+          format: password
+          example: '123456789a'
+
+    Anmeldung:
+      type: object
+      properties:
+        token:
+          type: string
+          description: 'Bei jeder Anfrage mitschicken: Authorization: Bearer <token>'
+          example: mep1.eyJrIjoxLCJuIjoiYWRtaW4iLCJleHAiOjE3NjQ1MDAwMDB9.Qk3x…
+        gueltigBis:
+          type: string
+          format: date-time
+          example: '2026-11-27T23:00:00+01:00'
+        benutzer:
+          type: object
+          properties:
+            name:
+              type: string
+              example: admin
+            email:
+              type: string
+              format: email
+              example: admin@test.com
+
     Uebersicht:
       type: object
       properties:
+        angemeldet:
+          type: object
+          description: Nur bei aktiver Anmeldung – das eigene Konto
+          properties:
+            name:
+              type: string
+              example: admin
+            email:
+              type: string
+              format: email
+              example: admin@test.com
         ressourcen:
           type: object
           description: Schlüssel = Name der Ressource in der URL
