@@ -41,62 +41,50 @@ declare(strict_types=1);
  *  Beim Speichern wird geprüft, ob es den Eintrag gibt; beim Löschen, ob er
  *  noch verwendet wird.
  *
- *  Anmeldung: Jede Anfrage braucht einen API-Schlüssel im Header X-API-Key
- *  (bei HTML-Formularen ersatzweise im Feld _api_key). Die Konten stehen in
- *  einer eigenen Datenbank, getrennt von den Fahrzeugdaten (benutzerverwaltung,
- *  Tabelle benutzer – anlegen mit benutzer.sql). Was eine Rolle darf, steht
- *  unten in ROLLEN. Kein gültiger Schlüssel → 401, Rolle darf das nicht → 403.
+ *  Datentypen: Auch Typ und Grenzen jedes Felds kommen aus der Datenbank
+ *  (src/Mapping/TypeCaster.php). Jede Eingabe wird VOR der Datenbank geprüft
+ *  und umgewandelt, z. B. "4,2" → 4.2, "ja" → 1, "24.12.2026" → 2026-12-24.
+ *  Passt ein Wert nicht, kommt 400 mit dem Feldnamen.
+ *
+ *  Konfiguration: config/gateway.php (Ressourcen, Verbindung, Grenzen, CORS),
+ *  Zugangsdaten in config/.env (Vorlage: config/.env.example, nicht im Git).
+ *  Eine Anmeldung gibt es in Version 1 nicht – Zugriffskontrolle kommt optional
+ *  mit dem SecurityCore (siehe README).
  *
  *  Antwort immer JSON. Bei Fehlern: {"fehler": "...", "details": [...]}
- *  Voraussetzung: PHP 8.1 oder neuer.
+ *  Voraussetzung: PHP 8.1 oder neuer (8.2 empfohlen).
  * ════════════════════════════════════════════════════════════════ */
 
 
-/* ── 1) KONFIGURATION ─────────────────────────────────────────── */
+/* ── 1) KONFIGURATION ─────────────────────────────────────────────
+ *  Die Werte kommen aus config/gateway.php (geladen in Abschnitt 6a)
+ *  und stehen danach als Konstanten bereit:
+ *    API_DEBUG       genaue Fehlermeldungen in der Antwort (Standard: aus)
+ *    RESSOURCEN      Name in der URL → Tabelle in der Datenbank (Whitelist)
+ *    DB_VERBINDUNG   dsn, user, pass der Datenbank
+ *    LIMIT_STANDARD  so viele Datensätze liefert eine Liste ohne ?limit=
+ *    LIMIT_MAXIMUM   mehr gibt es auch mit ?limit= nicht
+ *    CORS_URSPRUENGE Webseiten, die die API per JavaScript aufrufen dürfen
+ */
 
-const DB2_DSN  = 'mysql:host=127.0.0.1;dbname=fahrzeugverwaltung;charset=utf8mb4';
-const DB2_USER = 'root';
-const DB2_PASS = '';
+// Klassen aus src/ laden (PSR-4: Gateway\Mapping\TypeCaster → src/Mapping/TypeCaster.php).
+// Mit Composer übernimmt vendor/autoload.php das, ohne Composer der kleine Lader hier.
+if (is_file(__DIR__ . '/vendor/autoload.php')) {
+    require __DIR__ . '/vendor/autoload.php';
+} else {
+    spl_autoload_register(function (string $klasse): void {
+        if (str_starts_with($klasse, 'Gateway\\')) {
+            $datei = __DIR__ . '/src/' . str_replace('\\', '/', substr($klasse, strlen('Gateway\\'))) . '.php';
+            if (is_file($datei)) {
+                require $datei;
+            }
+        }
+    });
+}
 
-// true = genaue Fehlermeldungen (z. B. der SQL-Fehler) in der Antwort.
-// Hilft beim Entwickeln, verrät aber Interna – außerhalb von localhost auf false setzen!
-const API_DEBUG = true;
-
-// Tabellennamen genau so wie in phpMyAdmin (unter Linux zählt die Groß-/Kleinschreibung)
-const TBL_FAHRZEUGTYPEN  = 'fahrzeugtypen';
-const TBL_TREIBSTOFFE    = 'treibstoffe';
-const TBL_FAHRZEUGHALTER = 'fahrzeughalter';
-const TBL_FAHRZEUGE      = 'fahrzeuge';
-const TBL_FAHRZEUGARTEN  = 'fahrzeugarten';
-
-// Nur diese Tabellen sind über die API erreichbar (Whitelist).
-// Schlüssel = Name in der URL (klein geschrieben), Wert = Tabelle in der Datenbank.
-// Eine weitere Tabelle freigeben = eine Zeile ergänzen, sonst nichts.
-const RESSOURCEN = [
-    'fahrzeuge'      => TBL_FAHRZEUGE,
-    'fahrzeugtypen'  => TBL_FAHRZEUGTYPEN,
-    'fahrzeugarten'  => TBL_FAHRZEUGARTEN,
-    'treibstoffe'    => TBL_TREIBSTOFFE,
-    'fahrzeughalter' => TBL_FAHRZEUGHALTER,
-];
-
-// Konten für die Anmeldung – in einer eigenen, getrennten Datenbank.
-// Die Fahrzeug-Verbindung db() kommt dadurch gar nicht an die Konten heran.
-// Tipp: Hier reicht ein eigener MySQL-Benutzer, der in dieser Datenbank nur SELECT darf.
-const AUTH_DSN     = 'mysql:host=127.0.0.1;dbname=benutzerverwaltung;charset=utf8mb4';
-const AUTH_USER    = 'root';
-const AUTH_PASS    = '';
-const TBL_BENUTZER = 'benutzer';
-
-// Was darf welche Rolle? Die Rolle steht beim Konto in der Tabelle benutzer.
-// Eine neue Rolle = eine Zeile ergänzen. Unbekannte Rollen dürfen nichts.
-const ROLLEN = [
-    'nutzer' => ['GET'],                                     // nur lesen
-    'admin'  => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],   // alles
-];
-
-const LIMIT_STANDARD = 100;   // so viele Datensätze liefert eine Liste ohne ?limit=
-const LIMIT_MAXIMUM  = 1000;  // mehr gibt es auch mit ?limit= nicht
+use Gateway\Config\ConfigLoader;
+use Gateway\Config\ConfigValidator;
+use Gateway\Mapping\TypeCaster;
 
 // MySQL-Fehler, die der Client verursacht hat → passender Statuscode statt 500.
 // Schlüssel = MySQL-Fehlernummer
@@ -140,14 +128,19 @@ function fehler(int $status, string $meldung, array $details = []): never
 // einer JSON-Antwort – statt einer HTML-Fehlerseite, mit der kein Client etwas anfangen kann.
 function exceptionBehandeln(Throwable $e): never
 {
-    $details = API_DEBUG ? [$e->getMessage()] : [];
+    $debug   = defined('API_DEBUG') && API_DEBUG;
+    $details = $debug ? [$e->getMessage()] : [];
     $nummer  = $e instanceof PDOException ? (int) ($e->errorInfo[1] ?? 0) : 0;
 
     if (isset(MYSQL_FEHLER[$nummer])) {
         [$status, $meldung] = MYSQL_FEHLER[$nummer];
         fehler($status, $meldung, $details);
     }
-    error_log((string) $e);   // XAMPP: apache/logs/error.log
+    // Ins Log (XAMPP: apache/logs/error.log). Bei Datenbankfehlern NUR die Meldung:
+    // Im Stacktrace von new PDO(…) kann unter PHP 8.1 das Passwort als Argument stehen.
+    error_log($e instanceof PDOException
+        ? 'PDOException: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine()
+        : (string) $e);
     fehler(500, 'Interner Serverfehler.', $details);
 }
 
@@ -160,7 +153,8 @@ function db(): PDO
     static $pdo = null;
     if ($pdo instanceof PDO) return $pdo;
 
-    $pdo = new PDO(DB2_DSN, DB2_USER, DB2_PASS, [
+    // Zugangsdaten aus config/gateway.php bzw. config/.env
+    $pdo = new PDO(DB_VERBINDUNG['dsn'], DB_VERBINDUNG['user'], DB_VERBINDUNG['pass'], [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
@@ -177,9 +171,10 @@ function bezeichner(string $name): string
 }
 
 // Liest die Spalten einer Tabelle aus der Datenbank (pro Aufruf nur einmal).
-// Ergebnis z. B. ['typId' => ['typ' => 'int(11)', 'pk' => false, 'auto' => false,
-//                             'null' => false, 'pflicht' => true,
-//                             'verweis' => ['ressource' => 'fahrzeugtypen', 'spalte' => 'id']], ...]
+// Ergebnis z. B. ['FTID' => ['typ' => 'int(11)', 'datentyp' => 'int', 'min' => -2147483648,
+//                            'max' => 2147483647, 'pk' => false, 'auto' => false,
+//                            'null' => false, 'pflicht' => true,
+//                            'verweis' => ['ressource' => 'fahrzeugtypen', 'spalte' => 'FTID']], ...]
 function spalten(string $tabelle): array
 {
     static $cache = [];
@@ -189,7 +184,8 @@ function spalten(string $tabelle): array
     foreach (db()->query('SHOW COLUMNS FROM ' . bezeichner($tabelle)) as $s) {
         $auto = str_contains($s['Extra'], 'auto_increment');
         $spalten[$s['Field']] = [
-            'typ'     => $s['Type'],
+            'typ'     => $s['Type'],            // so, wie die Datenbank ihn meldet, z. B. int(11)
+        ] + TypeCaster::fromSql($s['Type']) + [ // einheitlich: datentyp, min, max, laenge, werte …
             'pk'      => $s['Key'] === 'PRI',   // Primärschlüssel
             'auto'    => $auto,                 // AUTO_INCREMENT: vergibt MySQL selbst
             'null'    => $s['Null'] === 'YES',  // darf leer (NULL) sein
@@ -293,42 +289,6 @@ function primaerschluessel(string $tabelle): string
 }
 
 
-// Zweite PDO-Verbindung (Singleton) – zur getrennten Datenbank mit den Konten
-function authDb(): PDO
-{
-    static $pdo = null;
-    if ($pdo instanceof PDO) return $pdo;
-
-    $pdo = new PDO(AUTH_DSN, AUTH_USER, AUTH_PASS, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES   => false,
-    ]);
-    return $pdo;
-}
-
-// Sucht das Konto zum API-Schlüssel. In der Tabelle steht nur die SHA-256-Prüfsumme
-// des Schlüssels, nie der Schlüssel selbst. Ergebnis: ['Name' => …, 'Rolle' => …] oder null.
-function benutzerFinden(string $schluessel): ?array
-{
-    try {
-        $abfrage = authDb()->prepare('SELECT Name, Rolle FROM ' . bezeichner(TBL_BENUTZER) . ' WHERE Schluessel = ?');
-        $abfrage->execute([hash('sha256', $schluessel)]);
-    } catch (PDOException $e) {
-        // Beim Verbinden steht die MySQL-Fehlernummer in getCode(), bei Abfragen in errorInfo
-        $nummer = (int) ($e->errorInfo[1] ?? $e->getCode());
-        preg_match('/dbname=([^;]+)/', AUTH_DSN, $treffer);
-        if ($nummer === 1049 || $nummer === 1146) {   // 1049 = Datenbank fehlt, 1146 = Tabelle fehlt
-            fehler(500, 'Die Konten-Datenbank "' . ($treffer[1] ?? '?') . '" bzw. ihre Tabelle "' . TBL_BENUTZER
-                        . '" fehlt. Bitte benutzer.sql in phpMyAdmin importieren.');
-        }
-        throw $e;
-    }
-    $konto = $abfrage->fetch();
-    return $konto === false ? null : $konto;
-}
-
-
 /* ── 4) EINGABEN LESEN UND PRÜFEN ─────────────────────────────── */
 
 // Liest die gesendeten Daten – egal ob JSON oder Formular, egal mit welcher Methode
@@ -378,6 +338,7 @@ function felderPruefen(string $tabelle, array $daten, bool $neu): array
     $felder    = [];
     $fehler    = [];
     $unbekannt = false;
+    $gemeldet  = [];   // Felder mit eigener Fehlermeldung – nicht zusätzlich als "fehlt" melden
 
     foreach ($daten as $name => $wert) {
         $name = (string) $name;
@@ -392,17 +353,29 @@ function felderPruefen(string $tabelle, array $daten, bool $neu): array
         }
         if (is_array($wert)) {
             $fehler[] = "Feld \"$name\" muss ein einzelner Wert sein, keine Liste.";
+            $gemeldet[$name] = true;
             continue;
         }
-        if (is_string($wert)) $wert = trim($wert);
-        if (is_bool($wert))   $wert = (int) $wert;                   // JSON true/false → 1/0
+        if (is_string($wert)) $wert = trim($wert);                  // Texte werden getrimmt
         if ($wert === '' && $spalten[$name]['null']) $wert = null;  // leeres Formularfeld → NULL
+
+        // Typ prüfen und umwandeln, z. B. "4,2" → 4.2, "ja" → 1, "24.12.2026" → "2026-12-24".
+        // Ein leeres Pflichtfeld meldet weiter unten die Pflichtfeld-Prüfung.
+        if ($wert !== null && !($wert === '' && $spalten[$name]['pflicht'])) {
+            try {
+                $wert = TypeCaster::cast($wert, $spalten[$name]);
+            } catch (InvalidArgumentException $e) {
+                $fehler[] = "Feld \"$name\": " . $e->getMessage() . '.';
+                $gemeldet[$name] = true;
+                continue;
+            }
+        }
         $felder[$name] = $wert;
     }
 
     // Pflichtfelder: beim Anlegen müssen sie da sein, beim Ändern dürfen sie nicht geleert werden
     foreach ($spalten as $name => $s) {
-        if (!$s['pflicht']) continue;
+        if (!$s['pflicht'] || isset($gemeldet[$name])) continue;
         $vorhanden = array_key_exists($name, $felder);
         $leer      = $vorhanden && ($felder[$name] === null || $felder[$name] === '');
         if (($neu && !$vorhanden) || $leer) {
@@ -441,14 +414,15 @@ function holen(string $tabelle, string $id): array
 {
     $pk = primaerschluessel($tabelle);
 
-    // Bei Zahlen-Schlüsseln nur Ziffern zulassen – MySQL würde "5abc" sonst als 5 lesen
-    $istZahl = preg_match('/^(tiny|small|medium|big)?int\b/i', spalten($tabelle)[$pk]['typ']) === 1;
-    if ($istZahl && !ctype_digit($id)) {
+    // ID passend zum Typ des Primärschlüssels prüfen – MySQL würde "5abc" sonst als 5 lesen
+    try {
+        $schluesselwert = TypeCaster::cast($id, spalten($tabelle)[$pk]);
+    } catch (InvalidArgumentException) {
         fehler(404, "Datensatz \"$id\" nicht gefunden.");
     }
 
     $abfrage = db()->prepare('SELECT * FROM ' . bezeichner($tabelle) . ' WHERE ' . bezeichner($pk) . ' = ?');
-    $abfrage->execute([$id]);
+    $abfrage->execute([$schluesselwert]);
     $zeile = $abfrage->fetch();
 
     if ($zeile === false) {
@@ -496,8 +470,15 @@ function liste(string $tabelle, array $parameter): array
             $bedingungen[] = bezeichner($spalte) . ' LIKE ?';
             $werte[]       = str_replace(['\\', '%', '_', '*'], ['\\\\', '\\%', '\\_', '%'], $wert);
         } else {
+            // Ohne Platzhalter: Wert passend zum Typ umwandeln – "?Leistung=abc" ist ein Fehler,
+            // kein stiller Vergleich mit 0
+            try {
+                $werte[] = TypeCaster::cast($wert, $spalten[$spalte]);
+            } catch (InvalidArgumentException $e) {
+                $fehler[] = "Filter \"$spalte\": " . $e->getMessage() . '.';
+                continue;
+            }
             $bedingungen[] = bezeichner($spalte) . ' = ?';
-            $werte[]       = $wert;
         }
     }
 
@@ -619,7 +600,7 @@ function verwendungPruefen(string $tabelle, array $zeile): void
 
 /* ── 6) ABLAUF ────────────────────────────────────────────────── */
 
-// 6a) Fehler abfangen, Kopfzeilen setzen
+// 6a) Fehler abfangen, Konfiguration laden, Kopfzeilen setzen
 set_exception_handler('exceptionBehandeln');
 set_error_handler(function (int $nr, string $text, string $datei, int $zeile): bool {
     if (!(error_reporting() & $nr)) return false;
@@ -628,11 +609,51 @@ set_error_handler(function (int $nr, string $text, string $datei, int $zeile): b
 
 header('Content-Type: application/json; charset=UTF-8');
 
-// CORS: erlaubt Aufrufe per JavaScript von anderen Adressen/Ports (z. B. localhost:5173)
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override, X-API-Key');
-header('Access-Control-Expose-Headers: Location');
+// Konfiguration laden (config/.env + config/gateway.php) und prüfen.
+// Ist sie fehlerhaft, startet die API nicht: 500, der Grund steht im Log.
+try {
+    $config = ConfigLoader::load(__DIR__ . '/config');
+} catch (Throwable $e) {
+    define('API_DEBUG', false);
+    $meldung = $e instanceof RuntimeException
+        ? $e->getMessage()                                  // z. B. "config/.env fehlt …"
+        : 'config/gateway.php enthält einen Fehler: ' . $e->getMessage() . ' (Zeile ' . $e->getLine() . ')';
+    error_log('Konfiguration: ' . $meldung);
+    fehler(500, 'Konfiguration fehlerhaft.', [$meldung]);   // Meldung enthält keine Zugangsdaten
+}
+
+$konfigFehler = ConfigValidator::validate($config);
+define('API_DEBUG', ($config['debug'] ?? false) === true);
+if ($konfigFehler !== []) {
+    error_log('Konfiguration: ' . implode(' | ', $konfigFehler));
+    fehler(500, 'Konfiguration fehlerhaft. Details im Server-Log' . (API_DEBUG ? '.' : ' oder mit API_DEBUG=1 in der Antwort.'),
+           API_DEBUG ? $konfigFehler : []);
+}
+
+// Werte aus der Konfiguration für den Rest der Datei bereitstellen (siehe Abschnitt 1)
+$verbindung = $config['verbindungen'][reset($config['ressourcen'])['verbindung']];
+define('DB_VERBINDUNG', [
+    'dsn'  => $verbindung['dsn'],
+    'user' => (string) ($verbindung['user'] ?? ''),
+    'pass' => (string) ($verbindung['pass'] ?? ''),
+]);
+define('RESSOURCEN', array_map(fn(array $r) => $r['quelle'], $config['ressourcen']));
+define('LIMIT_STANDARD', $config['grenzen']['limitStandard']);
+define('LIMIT_MAXIMUM', $config['grenzen']['limitMaximum']);
+define('CORS_URSPRUENGE', array_values($config['cors']['erlaubteUrspruenge'] ?? []));
+unset($config, $verbindung);
+
+// CORS: Nur Webseiten aus cors.erlaubteUrspruenge dürfen die API per JavaScript von einer
+// ANDEREN Adresse aus aufrufen. "*" wäre ohne Anmeldung riskant: Jede Webseite, die jemand
+// im internen Netz öffnet, könnte sonst per JavaScript Daten lesen und ändern.
+$ursprung = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($ursprung, CORS_URSPRUENGE, true)) {
+    header("Access-Control-Allow-Origin: $ursprung");
+    header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type, X-HTTP-Method-Override');
+    header('Access-Control-Expose-Headers: Location');
+}
+header('Vary: Origin');   // Antwort hängt vom Origin ab → Caches dürfen sie nicht vermischen
 
 // 6b) Route aus der URL lesen
 //     /MyEndPoint/api.php/fahrzeuge/5  → ['fahrzeuge', '5']
@@ -679,24 +700,10 @@ if ($methode === 'POST') {
     }
 }
 
-// 6d) Anmeldung: Wer fragt (sonst 401), und darf seine Rolle diese Methode (sonst 403)?
-//     Der Schlüssel kommt im Header X-API-Key – bei HTML-Formularen ersatzweise im Feld _api_key.
-//     Die Rolle schickt der Client NICHT mit: Die steht beim Konto in der Datenbank.
-$schluessel = $_SERVER['HTTP_X_API_KEY'] ?? $daten['_api_key'] ?? '';
-$konto      = is_string($schluessel) && trim($schluessel) !== '' ? benutzerFinden(trim($schluessel)) : null;
-if ($konto === null) {
-    fehler(401, 'Nicht angemeldet: gültigen API-Schlüssel im Header X-API-Key mitschicken.');
-}
-$rechte = ROLLEN[$konto['Rolle']] ?? [];
-if (!in_array($methode, $rechte, true)) {
-    fehler(403, "Die Rolle \"{$konto['Rolle']}\" darf kein $methode.",
-           ['Erlaubt: ' . ($rechte === [] ? 'nichts' : implode(', ', $rechte))]);
-}
-
 $daten = ohneSteuerfelder($daten);
 
-// 6e) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, was es gibt
-//     und was er selbst darf (angemeldet.darf)
+// 6d) Ohne Ressource: Übersicht – so kann jeder Client nachsehen, welche Ressourcen und
+//     Felder es gibt, mit Datentyp, Grenzen, Pflichtfeldern und Verweisen
 if ($ressource === '') {
     if ($methode !== 'GET') {
         fehler(405, 'Auf der Übersicht ist nur GET erlaubt.');
@@ -705,10 +712,7 @@ if ($ressource === '') {
     foreach (RESSOURCEN as $name => $tabelle) {
         $uebersicht[$name] = ['url' => "$apiUrl/$name", 'felder' => spalten($tabelle)];
     }
-    antwort(200, [
-        'angemeldet' => ['name' => $konto['Name'], 'rolle' => $konto['Rolle'], 'darf' => $rechte],
-        'ressourcen' => $uebersicht,
-    ]);
+    antwort(200, ['ressourcen' => $uebersicht]);
 }
 
 if (!isset(RESSOURCEN[$ressource])) {
@@ -728,7 +732,7 @@ if ($id === null && in_array($methode, ['PUT', 'PATCH', 'DELETE'], true)) {
     }
 }
 
-// 6f) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
+// 6e) Operation ausführen – zuerst Status und Daten festlegen, ausgegeben wird am Ende
 $status = 200;
 
 switch ($methode) {
@@ -772,5 +776,5 @@ switch ($methode) {
         fehler(405, "Methode $methode wird nicht unterstützt.");
 }
 
-// 6g) Antwort ausgeben
+// 6f) Antwort ausgeben
 antwort($status, $ergebnis);

@@ -6,7 +6,7 @@ Für Aufbau, Konfiguration und Entwicklung siehe [README.md](README.md).
 
 > **Legende:** ✅ = funktioniert heute · 🔜 = geplant für Version 2.0
 >
-> **Hinweis zum Übergang:** Die heutige `api.php` verlangt noch eine Anmeldung per Basic Auth. In Version 2.0 entfällt sie (siehe README, Roadmap Phase 1). Dieses Handbuch beschreibt den Standard **ohne Anmeldung**. Bis zur Umstellung bei `curl` zusätzlich `-u email:passwort` angeben.
+> **Ohne Anmeldung:** Die API verlangt standardmäßig keine Anmeldung. Ob du lesen und ändern darfst, regelt der Betreiber über das Netz bzw. optional über den SecurityCore.
 >
 > **Optionaler SecurityCore 🔜:** Hat der Betreiber den SecurityCore eingeschaltet, schickst du bei jeder Anfrage deinen Kundenschlüssel mit. Wie das geht, steht in [Abschnitt 3](#3-zugang-mit-kundenschlüssel-nur-mit-securitycore). Alle anderen Abschnitte gelten unverändert, du siehst dann nur die Befehle, die deine Rolle benutzen darf.
 
@@ -203,6 +203,8 @@ Ist der SecurityCore aktiv, zeigt die Hilfe **nur die Befehle, die deine Rolle b
 | ggf. ein **Präfix** vor dem Schlüssel | meist keins, manchmal `Bearer ` |
 
 Der Header-Name wird vom Betreiber festgelegt und kann bei jeder Installation anders heißen. Fehlt dir die Angabe, liefert `GET api.php/_hilfe` ohne Schlüssel eine `401`-Antwort, die den richtigen Header-Namen nennt.
+
+**Deine Datenbank:** Hat der Betreiber dir eine eigene Datenbank zugeordnet, landen alle deine Anfragen automatisch dort. Dein Schlüssel bzw. Token bestimmt das Ziel. Server, Datenbankname oder Datenbank-Passwort schickst du **nie** mit, die API würde sie auch nicht annehmen. Für eine andere Datenbank wendest du dich an den Betreiber.
 
 ### Schlüssel mitschicken
 
@@ -496,7 +498,7 @@ Jeder Fehler hat einen Statuscode und eine Meldung auf Deutsch:
 
 | Code | Bedeutung | Was tun? |
 |---|---|---|
-| `400` | Eingabe oder Parameter ungültig | `details` lesen: Pflichtfeld fehlt, unbekanntes Feld, falscher Wert, Verweis ins Leere |
+| `400` | Eingabe oder Parameter ungültig | `details` lesen: Pflichtfeld fehlt, unbekanntes Feld, Wert passt nicht zum Datentyp, Verweis ins Leere |
 | `401` | nur mit SecurityCore 🔜: Schlüssel/Token fehlt, falsch oder abgelaufen | siehe [Abschnitt 3](#3-zugang-mit-kundenschlüssel-nur-mit-securitycore) |
 | `403` | nur mit SecurityCore 🔜: Aktion für deine Rolle nicht erlaubt | `_hilfe` zeigt, was du darfst |
 | `404` | Ressource oder ID gibt es nicht | Schreibweise prüfen, `GET api.php` zeigt alle Ressourcen |
@@ -508,7 +510,33 @@ Jeder Fehler hat einen Statuscode und eine Meldung auf Deutsch:
 | `500` | Fehler im Server | Administrator fragen (Details stehen im Server-Log) |
 | `503` | Datenbank nicht erreichbar 🔜 | später erneut versuchen, läuft MariaDB bzw. MongoDB? (XAMPP: MySQL im Control Panel starten) |
 
-Die vollständige Liste liefert `GET api.php/_hilfe/fehler`.
+Die vollständige Liste liefert `GET api.php/_hilfe/fehler` 🔜.
+
+### Falscher Datentyp ✅
+
+Die API weiß aus der Datenbank, welchen Typ und welche Grenzen jedes Feld hat (zu sehen in `GET api.php` unter `datentyp`, `min`, `max`, `laenge`, `werte` …). Passt ein Wert nicht, sagt sie genau, welches Feld und warum:
+
+```json
+{
+  "fehler": "Ungültige Eingaben.",
+  "details": [
+    "Feld \"Leistung\": ganze Zahl von -2147483648 bis 2147483647 erwartet.",
+    "Feld \"Fahrzeug_Name\": höchstens 50 Zeichen erlaubt."
+  ]
+}
+```
+
+| Meldung | Bedeutung |
+|---|---|
+| `ganze Zahl erwartet` bzw. `ganze Zahl von … bis … erwartet` | Text oder Kommazahl in einem Zahlenfeld, oder Zahl außerhalb des Bereichs |
+| `Zahl erwartet`, `Dezimalzahl erwartet` | kein gültiger Zahlenwert. Das deutsche Komma ist erlaubt: `4,2` |
+| `höchstens 2 Nachkommastellen erlaubt`, `Zahl zu groß` | passt nicht in `DECIMAL(6,2)` & Co. |
+| `höchstens 50 Zeichen erlaubt` | Text zu lang |
+| `erlaubt sind nur: PKW, LKW` | Auswahlfeld (ENUM): nur diese Werte |
+| `Ja/Nein erwartet` | erlaubt: `true`/`false`, `1`/`0`, `ja`/`nein` |
+| `Datum erwartet (JJJJ-MM-TT oder TT.MM.JJJJ)` | kein gültiges Datum, z. B. `31.02.2026` |
+
+Dasselbe gilt für Filter: `?Leistung=abc` ergibt `Filter "Leistung": ganze Zahl … erwartet.`
 
 ---
 
@@ -570,7 +598,9 @@ BEISPIEL
 | Problem | Ursache | Lösung |
 |---|---|---|
 | `404` bei `/api/fahrzeuge`, aber `api.php/fahrzeuge` geht | `.htaccess` wird nicht beachtet | in Apache `mod_rewrite` aktivieren und `AllowOverride All` setzen, oder `api.php/…` benutzen |
-| `500` mit „Datenbank … fehlt“ | Datenbank nicht importiert | SQL-Datei in phpMyAdmin importieren |
+| `500` „Konfiguration fehlerhaft“ mit „config/.env fehlt“ | Zugangsdaten-Datei fehlt | `config/.env.example` nach `config/.env` kopieren und `DB_USER`/`DB_PASS` eintragen |
+| `500` „Konfiguration fehlerhaft“ ohne Details | Fehler in `config/gateway.php` | `API_DEBUG=1` in `config/.env` setzen, dann steht der Grund in der Antwort (sonst im Server-Log) |
+| `500` mit „Unknown database“ bzw. „Table … doesn't exist“ | Datenbank oder Tabelle gibt es nicht | `DB_NAME` (und `DB_HOST`) in `config/.env` sowie `quelle` unter `ressourcen` in `config/gateway.php` prüfen |
 | Neue Spalte taucht nicht auf | Schema-Cache ist veraltet 🔜 | `php bin/schema-aktualisieren.php` |
 | Neues Format bzw. neue Datenbank wird nicht erkannt 🔜 | Baustein-Cache veraltet, Abhängigkeit fehlt oder Datei falsch benannt | `php bin/bausteine-aktualisieren.php`, danach `php bin/config-pruefen.php` (nennt den Grund) |
 | `503` „Datenbank nicht erreichbar“ 🔜 | Datenbankserver läuft nicht oder Zugangsdaten falsch | MySQL in XAMPP starten, Zugangsdaten in `config/.env` prüfen |
@@ -578,7 +608,7 @@ BEISPIEL
 | `400` „Eintrag … gibt es nicht“ | Verweis zeigt ins Leere | gültige IDs der Zielressource abrufen (z. B. `GET api.php/fahrzeugtypen`) |
 | `409` beim Löschen | Datensatz wird noch verwendet | abhängige Datensätze zuerst ändern oder löschen |
 | Umlaute kaputt in Excel | CSV ohne BOM geöffnet | 🔜 CSV aus der API hat ein BOM, oder in Excel über „Daten → Aus Text/CSV“ öffnen |
-| JavaScript-Fehler „CORS“ | Aufruf von einer anderen Adresse | Adresse in `cors.erlaubteUrspruenge` eintragen 🔜 |
+| JavaScript-Fehler „CORS“ | Aufruf von einer anderen Adresse | Adresse in `config/gateway.php` unter `cors.erlaubteUrspruenge` eintragen (Betreiber) |
 | Antwort ist HTML statt JSON | PHP-Fehler vor der API | Server-Log prüfen (XAMPP: `apache/logs/error.log`) |
 | `401` trotz Schlüssel 🔜 | falscher Header-Name, Präfix fehlt, Token abgelaufen oder Kunde gesperrt | Header-Name aus der `401`-Antwort übernehmen, neues Token holen, Betreiber fragen |
 | Im Browser kommt der Schlüssel-Header nicht an 🔜 | CORS: der Header ist für diese Seite nicht freigegeben | Seite in `cors.erlaubteUrspruenge` eintragen (Betreiber) |

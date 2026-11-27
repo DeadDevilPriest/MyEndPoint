@@ -4,8 +4,8 @@
 $erlaubteOperationen = ['GET', 'POST', 'UPDATE', 'DELETE'];
 
 // Adresse der API, von dieser Seite aus gesehen: client/ liegt im API-Ordner.
-// Mit der .htaccess geht auch '../api'.
-$apiUrl = '../api/api';
+// '../api.php' funktioniert mit jedem Ordnernamen. Mit der .htaccess geht auch '../api'.
+$apiUrl = '../api.php';
 ?>
 <!DOCTYPE html>
 <html lang="de">
@@ -33,33 +33,13 @@ $apiUrl = '../api/api';
         tbody tr:hover { background: #f1f5fb; }
         details { margin-top: 1rem; }
         pre { background: #f6f6f6; padding: .75rem; overflow-x: auto; font-size: .85rem; }
-        #angemeldet { display: flex; gap: 1rem; align-items: center; max-width: 520px; margin: 0 0 1rem; }
-        #angemeldet[hidden] { display: none; }
-        #angemeldet button { margin: 0 0 0 auto; padding: .3rem .8rem; }
-        #login, #passwort { width: 100%; padding: .4rem; box-sizing: border-box; }
     </style>
 </head>
 <body>
 
 <h1>Fahrzeugverwaltung</h1>
 
-<!-- Anmeldung mit einem Konto aus der Konten-Datenbank (siehe benutzer.sql) -->
-<form id="anmeldung">
-    <fieldset>
-        <label for="login">E-Mail oder Benutzername</label>
-        <input type="text" id="login" autocomplete="username" required>
-        <label for="passwort">Passwort</label>
-        <input type="password" id="passwort" autocomplete="current-password" required>
-        <button type="submit">Anmelden</button>
-    </fieldset>
-</form>
-
-<p id="angemeldet" hidden>
-    <span>Angemeldet als <strong id="wer"></strong></span>
-    <button type="button" id="abmelden">Abmelden</button>
-</p>
-
-<form id="formular" hidden>
+<form id="formular">
     <fieldset>
         <label for="ressource">Tabelle</label>
         <select id="ressource"></select>
@@ -134,20 +114,15 @@ let felder     = {};          // Felder der gewählten Tabelle
 let pk         = null;        // Name des Primärschlüssels, meist "id"
 let auswahlen  = {};          // Fremdschlüssel: Spalte → Map(Wert → lesbarer Text)
 const geaendert = new Set();  // Felder, die seit dem letzten Laden geändert wurden
-let zugang     = '';          // "Basic …" – geht bei jeder Anfrage im Header Authorization mit
-let rechte     = [];          // HTTP-Methoden, die die eigene Rolle darf (meldet die API)
 
 const el = id => document.getElementById(id);
 const aktuelleOperation = () => document.querySelector('input[name=operation]:checked').value;
-const istGanzzahl = typ => /^(tiny|small|medium|big)?int\b/.test(typ);
-const istZahl     = typ => istGanzzahl(typ) || /^(decimal|numeric|float|double|real)/.test(typ);
 
 
 // ── 3) Verbindung zur API ──────────────────────────────────────
 // Schickt eine Anfrage und liefert Status, JSON und alles für die Detail-Anzeige
 async function anfrage(methode, pfad, daten = null) {
-    // E-Mail und Passwort weisen uns aus. Was wir dürfen, entscheidet die API anhand des Kontos.
-    const optionen = { method: methode, headers: { 'Authorization': zugang } };
+    const optionen = { method: methode, headers: {} };
     if (daten !== null) {
         optionen.headers['Content-Type'] = 'application/json';
         optionen.body = JSON.stringify(daten);
@@ -167,7 +142,7 @@ function verbindungsfehler(fehler) {
 }
 
 
-// ── 4) Anmelden und Start: Übersicht laden, Tabellen-Auswahl füllen ──
+// ── 4) Start: Übersicht laden, Tabellen-Auswahl füllen ─────────
 async function start() {
     let r;
     try {
@@ -175,72 +150,18 @@ async function start() {
     } catch (fehler) {
         return verbindungsfehler(fehler);
     }
-    if (r.status === 401) {            // Schlüssel falsch → zurück zur Anmeldung
-        abmelden();
-        return ergebnisZeigen(r);
-    }
     if (!r.ok || !r.json?.ressourcen) {
         return ergebnisZeigen({ ...r, ok: false,
-            json: { fehler: 'Unter dieser Adresse antwortet keine passende API.', details: [r.url, ...(r.json?.details ?? [])] } });
+            json: { fehler: r.json?.fehler ?? 'Unter dieser Adresse antwortet keine passende API.',
+                    details: [r.url, ...(r.json?.details ?? [])] } });
     }
     ressourcen = r.json.ressourcen;
-    rechte     = r.json.angemeldet?.darf ?? [];
 
-    // Anmeldung ausblenden, Formular zeigen
-    const konto = r.json.angemeldet ?? {};
-    el('wer').textContent  = `${konto.name} <${konto.email}> (Rolle: ${konto.rolle})`;
-    el('anmeldung').hidden  = true;
-    el('angemeldet').hidden = false;
-    el('formular').hidden   = false;
-
-    el('ressource').replaceChildren();
     for (const name of Object.keys(ressourcen)) {
         el('ressource').add(new Option(beschriftungFuer(name), name));
     }
     el('ressource').value = 'fahrzeuge' in ressourcen ? 'fahrzeuge' : Object.keys(ressourcen)[0];
-    operationenFreigeben();
     await ressourceWechseln();
-}
-
-// Operationen, die die eigene Rolle nicht darf, ausgrauen (z. B. darf "nutzer" nur GET).
-// Das ist nur Bequemlichkeit – verboten wird es von der API (403), nicht hier.
-function operationenFreigeben() {
-    for (const knopf of document.querySelectorAll('input[name=operation]')) {
-        knopf.disabled = !rechte.includes(METHODEN[knopf.value]);
-        knopf.closest('label').title = knopf.disabled ? 'Deine Rolle darf das nicht' : '';
-    }
-    if (document.querySelector('input[name=operation]:checked')?.disabled) {
-        el('op-GET').checked = true;
-    }
-}
-
-function abmelden() {
-    zugang = '';
-    zugangMerken('');
-    el('passwort').value    = '';
-    el('anmeldung').hidden  = false;
-    el('angemeldet').hidden = true;
-    el('formular').hidden   = true;
-}
-
-// "Basic " + Base64("login:passwort") – so sieht HTTP Basic Auth aus.
-// TextEncoder, damit auch Umlaute im Passwort richtig ankommen (btoa allein kann nur Latin-1).
-// Achtung: Base64 ist keine Verschlüsselung – außerhalb von localhost nur über https://.
-function basicAuth(login, passwort) {
-    const bytes = new TextEncoder().encode(`${login}:${passwort}`);
-    return 'Basic ' + btoa(String.fromCharCode(...bytes));
-}
-
-// Zugang nur für diesen Browser-Tab merken (sessionStorage), damit Neuladen nicht abmeldet.
-// Beim Schließen des Tabs ist er weg.
-function zugangLaden() {
-    try { return sessionStorage.getItem('zugang') ?? ''; } catch { return ''; }
-}
-function zugangMerken(wert) {
-    try {
-        if (wert) sessionStorage.setItem('zugang', wert);
-        else      sessionStorage.removeItem('zugang');
-    } catch { /* ohne Speicher geht es auch, dann nur ohne Merken */ }
 }
 
 // Andere Tabelle gewählt: Auswahllisten laden, Felder neu bauen
@@ -314,19 +235,17 @@ function formularBauen() {
     geaendert.clear();
 }
 
-// Passendes Eingabeelement zum Spaltentyp der Datenbank
+// Passendes Eingabeelement zum Datentyp. Typ und Grenzen meldet die API in der Übersicht
+// (datentyp, min, max, laenge, nachkomma, werte, format) – der Client rät nichts selbst.
+// Die eigentliche Prüfung macht die API; das hier ist nur Bequemlichkeit beim Tippen.
 function eingabeFuer(name, feld) {
-    const typ = feld.typ.toLowerCase();
-
-    // Auswahlliste: Fremdschlüssel, enum('auto','motorrad') oder Ja/Nein bei tinyint(1)
+    // Auswahlliste: Fremdschlüssel, ENUM-Werte oder Ja/Nein
     let optionen = null;
     if (auswahlen[name]) {
         optionen = [...auswahlen[name]];
-    } else if (typ.startsWith('enum(')) {
-        optionen = [...feld.typ.matchAll(/'((?:[^']|'')*)'/g)]
-            .map(treffer => treffer[1].replaceAll("''", "'"))
-            .map(wert => [wert, wert]);
-    } else if (typ.startsWith('tinyint(1)')) {
+    } else if (feld.werte && !feld.mehrfach) {
+        optionen = feld.werte.map(wert => [wert, wert]);
+    } else if (feld.datentyp === 'bool') {
         optionen = [['1', 'Ja'], ['0', 'Nein']];
     }
     if (optionen) {
@@ -338,21 +257,27 @@ function eingabeFuer(name, feld) {
 
     const eingabe = document.createElement('input');
     eingabe.type = 'text';
-    if (istGanzzahl(typ)) {
+    if (feld.datentyp === 'int') {
         eingabe.type = 'number';
         eingabe.step = '1';
-        if (typ.includes('unsigned')) eingabe.min = '0';
-    } else if (istZahl(typ)) {
+        if (feld.min !== undefined) eingabe.min = String(feld.min);
+        if (feld.max !== undefined) eingabe.max = String(feld.max);
+    } else if (feld.datentyp === 'float') {
         eingabe.type = 'number';
         eingabe.step = 'any';
-    } else if (typ === 'date') {
-        eingabe.type = 'date';
-    } else if (/^(datetime|timestamp)/.test(typ)) {
-        eingabe.type = 'datetime-local';
+        if (feld.min !== undefined) eingabe.min = String(feld.min);
+    } else if (feld.datentyp === 'decimal') {
+        eingabe.type = 'number';
+        eingabe.step = feld.nachkomma > 0 ? (1 / 10 ** feld.nachkomma).toFixed(feld.nachkomma) : '1';   // 2 → 0.01
+        if (feld.min !== undefined) eingabe.min = String(feld.min);
+    } else if (feld.datentyp === 'datetime') {
+        eingabe.type = feld.format === 'Y-m-d' ? 'date' : 'datetime-local';
+        if (eingabe.type === 'datetime-local') eingabe.step = '1';
+    } else if (feld.format === 'H:i:s') {
+        eingabe.type = 'time';
         eingabe.step = '1';
     }
-    const laenge = typ.match(/char\((\d+)\)/);   // varchar(30) → höchstens 30 Zeichen
-    if (laenge) eingabe.maxLength = Number(laenge[1]);
+    if (feld.laenge && !feld.bytes) eingabe.maxLength = feld.laenge;   // varchar(30) → höchstens 30 Zeichen
     return eingabe;
 }
 
@@ -374,7 +299,8 @@ function operationWechseln() {
     }
 }
 
-// Werte aller aktiven Felder als { spalte: wert }. Zahlen werden als Zahl geschickt.
+// Werte aller aktiven Felder als { spalte: wert }. Ganz- und Kommazahlen werden als Zahl
+// geschickt, DECIMAL bleibt Text (sonst könnten Rundungsfehler entstehen).
 function formularWerte() {
     const werte = {};
     for (const [name, feld] of Object.entries(felder)) {
@@ -383,7 +309,8 @@ function formularWerte() {
 
         let wert = eingabe.value.trim();
         if (eingabe.type === 'datetime-local') wert = wert.replace('T', ' ');
-        werte[name] = wert !== '' && istZahl(feld.typ.toLowerCase()) ? Number(wert) : wert;
+        const alsZahl = feld.datentyp === 'int' || feld.datentyp === 'float';
+        werte[name] = wert !== '' && alsZahl ? Number(wert) : wert;
     }
     return werte;
 }
@@ -443,7 +370,6 @@ el('formular').addEventListener('submit', async (ereignis) => {
     }
 
     ergebnisZeigen(r);
-    if (r.status === 401) abmelden();   // z. B. Konto inzwischen gelöscht
     if (!r.ok) return;
 
     // Formular auf den Stand der Datenbank bringen
@@ -540,17 +466,8 @@ document.querySelectorAll('input[name=operation]')
 el('felder').addEventListener('input',  e => geaendert.add(e.target.name));
 el('felder').addEventListener('change', e => geaendert.add(e.target.name));
 el('leeren').addEventListener('click', () => { formularLeeren(); el('ergebnis').hidden = true; });
-el('anmeldung').addEventListener('submit', (ereignis) => {
-    ereignis.preventDefault();
-    zugang = basicAuth(el('login').value.trim(), el('passwort').value);
-    zugangMerken(zugang);
-    start();
-});
-el('abmelden').addEventListener('click', () => { abmelden(); el('ergebnis').hidden = true; });
 
-// Seite neu geladen und schon angemeldet? Dann direkt starten, sonst auf die Anmeldung warten.
-zugang = zugangLaden();
-if (zugang) start();
+start();
 </script>
 </body>
 </html>
