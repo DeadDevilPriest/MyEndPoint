@@ -4,7 +4,7 @@ Eine REST-API in PHP, die jede freigegebene Datenbanktabelle per HTTP lesbar, an
 
 Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehrere Ein- und Ausgabeformate (JSON, Formular, CSV, XML …), mehrere Speicher-Backends (MariaDB, MongoDB, Dateien), eine zentrale Konfiguration, **eingebaute Hilfe-Befehle** und einen **optionalen SecurityCore**, der standardmäßig ausgeschaltet ist.
 
-> **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON, ohne Anmeldung, Konfiguration in `config/`, Typprüfung aus der Datenbank). Phase 1 der [Roadmap](#roadmap) ist erledigt. Alles, was mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt.
+> **Stand:** `api.php` ist lauffähig (Version 1, nur MariaDB und JSON, Konfiguration in `config/`, Typprüfung aus der Datenbank, optionale Anmeldung über eine Login-Datenbank). Phase 1 der [Roadmap](#roadmap) ist erledigt. Alles, was mit 🔜 markiert ist, ist geplant und noch nicht umgesetzt.
 >
 > **Für Anwender:** Die Bedienung der API mit allen Hilfe-Befehlen erklärt das [Benutzerhandbuch](HANDBUCH.md).
 
@@ -41,8 +41,9 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Zugriffskontrolle | **optionaler SecurityCore, standardmäßig aus** (siehe [SecurityCore](#securitycore-optional)) | ohne Konfiguration offen wie bisher geplant, bei Bedarf pro Kunde absicherbar |
 | Grundschutz | **immer aktiv, nicht abschaltbar** (Prepared Statements, Whitelist, XXE aus, Größenlimit …) | kostet praktisch nichts und schützt vor kaputten oder böswilligen Eingaben, egal wer sie schickt |
 | Geltungsbereich | **Variante C: global + pro Ressource zusätzlich**. Ressourcen können strenger sein, aber nie offener als global. | neue Ressourcen sind automatisch mindestens global geschützt |
-| Identität | **Kundenschlüssel in einem frei benennbaren HTTP-Header**, optional gegen ein **Token** tauschbar (`POST /_login`) | kein Benutzername/Passwort nötig, Rolle und Verbindung kommen immer aus der Config und nie vom Client |
-| Anmeldung mit Benutzername/Passwort (`basic`) | **entfällt** | durch Kundenschlüssel und Token ersetzt |
+| Identität | **Konto in der Login-Datenbank** (Benutzername oder E-Mail + Passwort) ✅, später zusätzlich **Kundenschlüssel** im Header 🔜. Beides wird bei `POST /_login` gegen ein **Token** getauscht. | Rolle und Verbindung kommen immer vom Server (Datenbank bzw. Config), nie vom Client |
+| Anmeldung | **Passwort nur einmal bei `POST /_login`**, danach nur noch der Token (`Authorization: Bearer …`). Kein Basic Auth bei jeder Anfrage. | Das Passwort geht nur einmal über das Netz, das absichtlich langsame `password_verify()` läuft nur bei der Anmeldung |
+| Login-Datenbank | **immer nutzbar:** ohne `LOGIN_DB_NAME` in `config/.env` liegt die Login-Tabelle in der Daten-Datenbank, mit `LOGIN_DB_*` in einer eigenen (dann alle `LOGIN_DB_*`-Werte, nie gemischt) | einfacher Start mit einer Datenbank, sicherer mit getrennter Login-Datenbank und Nur-Lese-Benutzer |
 | Rollen | **nur mit SecurityCore**, Rechte pro Ressource (`crud`) | ohne SecurityCore gibt es niemanden, dem eine Rolle zugeordnet wäre |
 | Hilfe bei aktiver Sicherheit | **zeigt nur die Befehle, die die Rolle benutzen darf** | jeder Kunde sieht seine eigene, passende Doku, keine Sicherheitsdetails |
 | Request-Limit (Anfragen pro Zeit) | **vorerst keins**, später als optionaler Wächter | kann ergänzt werden, ohne den Kern zu ändern |
@@ -77,7 +78,8 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
    curl "http://localhost/MyEndPoint/api.php/_hilfe?format=text"      # 🔜
    ```
 
-5. Im Browser:
+5. Optional **Anmeldung einschalten**: Login-Tabelle mit `login.sql` anlegen, Passwort-Hashes mit `php bin/passwort-hash.php` erzeugen, `TOKEN_SECRET` in `config/.env` setzen und in `config/gateway.php` `sicherheit.aktiv` auf `true` stellen (siehe [Anmeldung mit der Login-Datenbank](#anmeldung-mit-der-login-datenbank)).
+6. Im Browser:
    - `http://localhost/MyEndPoint/client/`: Formular-Client
    - `http://localhost/MyEndPoint/docs.html`: Swagger-Doku zum Ausprobieren
 
@@ -91,10 +93,13 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 |---|---|---|
 | `api.php` | Die API (Version 1), eine Datei, prozedural | ✅ läuft, ohne Anmeldung |
 | `config/gateway.php` | Konfiguration: Ressourcen, Verbindung, Grenzen, CORS | ✅ |
-| `config/.env.example` | Vorlage für `config/.env` (Zugangsdaten, `API_DEBUG`) – `.env` selbst ist nicht im Git | ✅ |
+| `config/.env.example` | Vorlage für `config/.env` (Daten- und Login-Datenbank, `TOKEN_SECRET`, `API_DEBUG`) – `.env` selbst ist nicht im Git | ✅ |
 | `config/.htaccess` | sperrt den Ordner für das Web | ✅ |
 | `src/Config/` | `ConfigLoader` (lädt `.env` + `gateway.php`), `ConfigValidator` (Prüfung beim Start) | ✅ |
 | `src/Mapping/TypeCaster.php` | Datentypen aus der Datenbank erkennen, Eingaben prüfen und umwandeln | ✅ |
+| `src/Security/` | `Login` (Konto prüfen), `Token` (HMAC-Token mit Ablauf), `KlartextPasswort` | ✅ |
+| `login.sql` | Vorlage für die Login-Tabelle (Benutzername, E-Mail, Passwort-Hash) | ✅ |
+| `bin/passwort-hash.php` | erzeugt den Hash für ein Passwort der Login-Tabelle | ✅ |
 | `src/…` (übrige Dateien) | Gerüst für Phase 2, noch leer | 🔜 |
 | `composer.json` | PSR-4-Autoloading (`Gateway\` → `src/`), optional | ✅ |
 | `.htaccess` | URLs ohne `api.php`, sperrt `config/`, `src/`, `.git` … | ✅ |
@@ -124,7 +129,8 @@ Der Branch `api-2.0` baut diese API zu einem **universellen Gateway** aus: mehre
 | Übersicht `GET api.php` | ✅ | ✅ |
 | **Hilfe-Befehle** (`_hilfe`, `?_hilfe`, `--hilfe`) | ❌ | 🔜 |
 | Pflicht-Anmeldung | entfernt ✅ | **entfällt** |
-| SecurityCore (optional, Standard: aus) | ❌ | 🔜 Kundenschlüssel im Header, Token, IP-Freigabe … |
+| Anmeldung (optional): Login-Datenbank + Token | ✅ global | ✅ dazu pro Ressource (Variante C) 🔜 |
+| SecurityCore (optional, Standard: aus) | teilweise (Anmeldung) | 🔜 Kundenschlüssel im Header, IP-Freigabe, Rollen … |
 | Rollen | ❌ (mit der Anmeldung entfernt) | 🔜 nur mit SecurityCore, pro Kunde und Ressource |
 | Hilfe gefiltert nach Rolle | ❌ | 🔜 nur mit SecurityCore |
 | Aktionen pro Ressource einschränken (z. B. nur lesen) | ❌ | 🔜 optional |
@@ -457,7 +463,8 @@ Seit Phase 1 stehen die früheren Konstanten aus `api.php` in `config/gateway.ph
 | `LIMIT_STANDARD`, `LIMIT_MAXIMUM` | `grenzen` | ✅ |
 | `API_DEBUG` | `debug`, eingeschaltet mit `API_DEBUG=1` in der `.env` (Standard: aus) | ✅ |
 | `Access-Control-Allow-Origin: *` | `cors.erlaubteUrspruenge` | ✅ |
-| `AUTH_*`, `TBL_BENUTZER`, `ROLLEN` | entfernt (Kunden und Rollen kommen optional mit dem SecurityCore) | ✅ |
+| `AUTH_*`, `TBL_BENUTZER` | `sicherheit` (`aktiv`, `login`, `header`, `token`) + `.env` (`LOGIN_DB_*`, `TOKEN_SECRET`), Anmeldung nur noch optional und über Token | ✅ |
+| `ROLLEN` | entfernt (Rollen kommen optional mit dem SecurityCore, S4) | ✅ |
 | `MYSQL_FEHLER` | bleibt vorerst in `api.php` | 🔜 in den PdoDriver (Phase 2) |
 
 Der `ConfigLoader` (`src/Config/ConfigLoader.php`) liest zuerst `config/.env` und übergibt die Werte an `gateway.php` als Array **`$env`**, also `$env['DB_USER']` statt `getenv('DB_USER')`. So wirkt eine Änderung an der `.env` sofort, ohne Apache-Neustart, und das Passwort landet nicht in der Prozessumgebung. In `api.php` stehen die Werte danach als Konstanten bereit (`RESSOURCEN`, `DB_VERBINDUNG`, `LIMIT_*`, `API_DEBUG`, `CORS_URSPRUENGE`). Version 1 kennt nur den Treiber `pdo` und eine Verbindung für alle Ressourcen. Ist OPcache aktiv, prüft PHP geänderte Dateien standardmäßig nur alle 2 Sekunden (`opcache.revalidate_freq`): Eine Änderung an `gateway.php` kann also kurz dauern, Änderungen an der `.env` wirken sofort.
@@ -608,7 +615,7 @@ Die Konfiguration wird geprüft, bevor der erste Request bearbeitet wird:
 
 Ist etwas falsch, antwortet die API mit `500` und schreibt den Grund ins Log. Manuell prüfen: `php bin/config-pruefen.php` 🔜.
 
-**Version 1 prüft schon** (`src/Config/ConfigValidator.php`): `config/.env` vorhanden, jede Verbindung mit Treiber `pdo` und `dsn` (bei MySQL mit `host=`), jede Ressource mit existierender Verbindung und `quelle`, Ressourcennamen (Kleinbuchstaben, nicht mit `_`), `grenzen` (1 ≤ `limitStandard` ≤ `limitMaximum`), Adressen in `cors.erlaubteUrspruenge`, alle Ressourcen auf **einer** Verbindung. Die Details stehen mit `API_DEBUG=1` auch in der Antwort. Die übrigen Punkte oben kommen mit den jeweiligen Bausteinen.
+**Version 1 prüft schon** (`src/Config/ConfigValidator.php`): `config/.env` vorhanden, jede Verbindung mit Treiber `pdo` und `dsn` (bei MySQL mit `host=`), jede Ressource mit existierender Verbindung und `quelle`, Ressourcennamen (Kleinbuchstaben, nicht mit `_`), `grenzen` (1 ≤ `limitStandard` ≤ `limitMaximum`), Adressen in `cors.erlaubteUrspruenge`, alle Ressourcen auf **einer** Verbindung, die Login-Tabelle ist **keine** Ressource (auch bei ausgeschalteter Anmeldung). Bei `sicherheit.aktiv`: Login-Verbindung, -Tabelle und -Spalten, Header-Name, `TOKEN_SECRET` mindestens 32 Zeichen, Gültigkeit mindestens 60 Sekunden (fail closed). Die Details stehen mit `API_DEBUG=1` auch in der Antwort. Die übrigen Punkte oben kommen mit den jeweiligen Bausteinen.
 
 ---
 
@@ -1066,7 +1073,7 @@ Auch mit Automatik braucht ein neues Backend die Klasse selbst und einen Eintrag
 
 ## SecurityCore (optional)
 
-> 🔜 Geplant. **Standardmäßig ausgeschaltet.** Ohne Konfiguration verhält sich die API so, als gäbe es den SecurityCore nicht: kein Header wird ausgewertet, keine Sicherheitsklasse wird geladen.
+> **Teilweise umgesetzt:** die [Anmeldung mit der Login-Datenbank](#anmeldung-mit-der-login-datenbank) ✅ (global für alle Ressourcen). Alles andere in diesem Abschnitt ist 🔜 geplant. **Standardmäßig ausgeschaltet.** Ohne Konfiguration verhält sich die API so, als gäbe es den SecurityCore nicht: kein Header wird ausgewertet.
 
 ### Zwei Ebenen
 
@@ -1097,7 +1104,8 @@ Der `Kontext` trägt den **`Principal`**: wer anfragt. Ohne SecurityCore ist das
 | `https` | lehnt unverschlüsselte Requests ab | – | Mikrosekunden |
 | `nurLesen` | schaltet alle Schreibzugriffe ab, z. B. für eine Demo | – | Mikrosekunden |
 | `kundenschluessel` | nur Kunden mit gültigem Schlüssel im konfigurierten Header | – (liefert die Identität) | Mikrosekunden (SHA-256) |
-| `token` | Schlüssel einmal gegen ein Token tauschen, danach nur noch Token | `kundenschluessel` | Mikrosekunden (HMAC) |
+| `login` ✅ | Konto aus der Login-Datenbank (Benutzername/E-Mail + Passwort) bei `POST /_login` | – (liefert die Identität) | nur bei `/_login`: ~50–100 ms (bcrypt) |
+| `token` ✅ | danach nur noch Token, mit Ablaufzeit | `login` oder `kundenschluessel` | Mikrosekunden (HMAC) + 1 SELECT (gibt es das Konto noch?) |
 | `rollen` | Rechte pro Kunde und Ressource (`crud`), filtert auch die Hilfe | eine Identität | Mikrosekunden |
 | `requestLimit` | Anfragen pro Zeit (später, vorerst nicht benötigt) | – (optional Identität) | Mikrosekunden (APCu) |
 | `audit` | protokolliert Schreibzugriffe mit Kunde, Zeit, Ressource, ID | sinnvoll mit Identität | ~1 ms |
@@ -1132,6 +1140,60 @@ wirksame Wächter = (global aktiv ? globale Wächter : keine)  ∪  Wächter der
 | A: nur global | ein Schalter, nichts vergessen | keine Ausnahmen, alles gleich streng |
 | B: nur pro Ressource | sehr flexibel | neue Ressourcen sind offen, bis man sie einträgt |
 | **C: kombiniert** (gewählt) | so sicher wie A, fast so flexibel wie B | man muss beide Ebenen kennen |
+
+### Anmeldung mit der Login-Datenbank
+
+✅ Umgesetzt (global, also für alle Ressourcen gleich). Die Konten stehen in einer Tabelle mit Benutzername, E-Mail und Passwort-Hash (Vorlage: `login.sql`):
+
+```php
+// config/gateway.php
+'verbindungen' => [
+    'fahrzeuge' => $db('DB_'),
+    // Eigene Login-Datenbank nur, wenn LOGIN_DB_NAME gesetzt ist – sonst dieselbe wie die Daten
+    'login'     => ($env['LOGIN_DB_NAME'] ?? '') !== '' ? $db('LOGIN_DB_') : $db('DB_'),
+],
+'sicherheit' => [
+    'aktiv'  => true,
+    'login'  => [
+        'verbindung' => 'login',
+        'tabelle'    => 'benutzer',
+        'spalten'    => ['id' => 'IID', 'name' => 'username', 'email' => 'useremail', 'passwort' => 'password'],
+    ],
+    'header' => ['name' => 'Authorization', 'praefix' => 'Bearer '],
+    'token'  => ['secret' => $env['TOKEN_SECRET'] ?? '', 'gueltigkeit' => 8 * 3600],
+],
+```
+
+```dotenv
+# config/.env – Login-Datenbank (leer lassen = Login-Tabelle in der Daten-Datenbank)
+LOGIN_DB_HOST=127.0.0.1
+LOGIN_DB_NAME=benutzerverwaltung
+LOGIN_DB_USER=api_login        # darf dort nur SELECT
+LOGIN_DB_PASS=...
+TOKEN_SECRET=...               # php -r "echo bin2hex(random_bytes(32));"
+```
+
+```bash
+# 1. Anmelden (einmal) – login ist Benutzername oder E-Mail
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"login":"admin@test.com","passwort":"…"}' http://localhost/MyEndPoint/api.php/_login
+# → {"token":"mep1.eyJrIjoxLCJu…","gueltigBis":"2026-11-27T23:00:00+01:00","benutzer":{"name":"admin","email":"admin@test.com"}}
+
+# 2. Jede weitere Anfrage mit dem Token
+curl -H "Authorization: Bearer mep1.eyJrIjoxLCJu…" http://localhost/MyEndPoint/api.php/fahrzeuge
+```
+
+| Punkt | Umsetzung |
+|---|---|
+| **Welche Datenbank?** | Ist `LOGIN_DB_NAME` gesetzt, wird die Verbindung **ganz** aus `LOGIN_DB_*` gebaut (leere Werte → Standard, z. B. `127.0.0.1`). Sonst nutzt die Anmeldung die Daten-Verbindung `DB_*`. Nie gemischt. |
+| **Passwörter** | nur als Hash von `password_hash()`. Hash erzeugen: `php bin/passwort-hash.php`. Steht noch Klartext in der Tabelle, sagt die API das bei `API_DEBUG=1`. |
+| **Wann wird das Passwort geprüft?** | nur bei `POST /_login`. Danach weist der Token aus. Unbekannte Konten kosten genauso lange wie falsche Passwörter (Dummy-Hash), damit man nicht ausprobieren kann, welche es gibt. |
+| **Ohne gültigen Token** | jede Ressource und die Übersicht antworten mit `401`. `OPTIONS` und `POST /_login` sind immer erreichbar. |
+| **Konto löschen** | wirkt sofort: Bei jeder Anfrage wird geprüft, ob es das Konto im Token noch gibt (ein schnelles SELECT, kein bcrypt). |
+| **Übersicht** | `GET api.php` meldet unter `angemeldet` Name und E-Mail des eigenen Kontos. |
+| **Login-Tabelle** | darf **nie** unter `ressourcen` stehen – der ConfigValidator lehnt das beim Start ab, auch wenn die Anmeldung aus ist. |
+| **Rollen** | noch keine: Jedes angemeldete Konto darf alles. Rollen kommen mit S4 (z. B. als Spalte `rolle` in der Login-Tabelle). |
+| **Client** | `client/index.php` zeigt das Anmeldeformular nur, wenn die API `401` meldet, und merkt sich den Token pro Browser-Tab. In `docs.html` den Token unter **Authorize** eintragen. |
 
 ### Kunden und Kundenschlüssel
 
@@ -1206,7 +1268,7 @@ curl -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/fahrze
 
 ### Token (`POST /_login`)
 
-Optionaler Wächter `token`: Der Kunde tauscht seinen Schlüssel **einmal** gegen ein Token mit Ablaufzeit und schickt danach nur noch das Token.
+Wächter `token` (✅ für die Anmeldung mit der Login-Datenbank, 🔜 für Kundenschlüssel): Man meldet sich **einmal** an (Konto ✅ oder Kundenschlüssel 🔜) und schickt danach nur noch das Token mit Ablaufzeit. Das Beispiel unten zeigt den geplanten Weg mit Kundenschlüssel; mit Konto siehe [Anmeldung mit der Login-Datenbank](#anmeldung-mit-der-login-datenbank).
 
 ```bash
 curl -X POST -H "X-MyEndPoint-Key: 7f3c9a…" http://localhost/MyEndPoint/api.php/_login
@@ -1230,12 +1292,12 @@ curl -H "X-MyEndPoint-Key: mep1.eyJr…" http://localhost/MyEndPoint/api.php/fah
 
 | Punkt | Umsetzung |
 |---|---|
-| Wo wird es geschickt? | im selben konfigurierten Header wie der Schlüssel. Tokens erkennt die API am Präfix `mep1.`. |
-| Was steht drin? | nur Kundenname und Ablaufzeit, signiert mit HMAC-SHA256. **Keine Rolle.** |
-| Rolle | wird bei jedem Request aus der Config gelesen. Eine geänderte Rolle oder ein gesperrter Kunde wirkt sofort. |
+| Wo wird es geschickt? | im konfigurierten Header, Standard `Authorization: Bearer <token>` (`sicherheit.header`). Tokens erkennt die API am Präfix `mep1.`. |
+| Was steht drin? | nur Konto-ID bzw. Kundenname, Name und Ablaufzeit (`exp`), signiert mit HMAC-SHA256 (`src/Security/Token.php`). **Keine Rolle, kein Passwort.** |
+| Rolle, Sperre | werden bei jedem Request neu gelesen (Login-Tabelle bzw. Config). Ein gelöschtes Konto oder ein gesperrter Kunde wirkt sofort. |
 | Warum überhaupt Token? | Der dauerhafte Schlüssel wird nur selten übertragen. Ein abgefangenes Token ist nach Ablauf wertlos. |
 | Alle Tokens ungültig machen | `TOKEN_SECRET` ändern |
-| `POST /_login` | ist immer erreichbar, sonst könnte sich niemand ein Token holen. Ohne gültigen Schlüssel antwortet er mit `401`. |
+| `POST /_login` | ist immer erreichbar, sonst könnte sich niemand ein Token holen. Bei falschen Anmeldedaten antwortet er mit `401`. |
 
 ### Rollen
 
@@ -1274,7 +1336,7 @@ Recht = (rollen[rolle][ressource] ?? rollen[rolle]['*'] ?? '')  ∩  ressourcen[
 | Was | Warum |
 |---|---|
 | `OPTIONS` (CORS-Vorabanfrage) | Browser schicken dabei technisch keine eigenen Header mit |
-| `POST /_login` | sonst könnte sich niemand ein Token holen. Prüft selbst den Schlüssel. |
+| `POST /_login` | sonst könnte sich niemand ein Token holen. Prüft selbst Benutzername/E-Mail und Passwort (bzw. später den Schlüssel). |
 
 ### Weitere Wächter
 
@@ -1328,7 +1390,7 @@ S1  Fundament
 | **S5** | `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`, Sperre über Config | mittel |
 | **S6** | `requestLimit` (wenn benötigt), `audit` | mittel |
 
-Die Anmeldung mit Benutzername und Passwort aus der früheren `api.php` (`zugangsdaten()`, `anmelden()`, `benutzer.sql`) ist mit Phase 1 entfernt und wird **nicht** übernommen. Kundenschlüssel und Token ersetzen sie.
+**Vorgezogen und umgesetzt ✅:** die [Anmeldung mit der Login-Datenbank](#anmeldung-mit-der-login-datenbank) mit Token (`POST /_login`, Wächter `login` + `token`, global). Anders als die frühere Pflicht-Anmeldung per Basic Auth ist sie optional, prüft das Passwort nur einmal pro Anmeldung und schickt danach nur noch den Token. Mit S1 wandert sie in das Wächter-Gerüst und gilt dann auch pro Ressource (Variante C).
 
 ---
 
@@ -1425,7 +1487,7 @@ MyEndPoint/
 
 ### Was ein Request kostet
 
-Mit dem Wegfall der Anmeldung entfällt auch die bcrypt-Prüfung (`password_verify()`, grob 50–100 ms pro Request), bisher der mit Abstand größte Kostenpunkt. Übrig bleiben:
+Die bcrypt-Prüfung (`password_verify()`, grob 50–100 ms) läuft nur noch bei `POST /_login`, nicht mehr bei jeder Anfrage. Mit aktiver Anmeldung kommen pro Request nur eine HMAC-Prüfung und ein SELECT auf die Login-Tabelle dazu. Übrig bleiben:
 
 | Arbeitsschritt | Kosten (geschätzt) | Bemerkung |
 |---|---|---|
@@ -1550,7 +1612,8 @@ Ist der SecurityCore aus, kann **jeder, der die Adresse erreicht, alle Daten les
 
 Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere Kunden unterschiedliche Rechte brauchen:
 
-- [ ] `sicherheit.aktiv = true` mit mindestens `kundenschluessel` und `rollen`, oder diese Wächter für die betroffenen Ressourcen eintragen (Variante C).
+- [ ] `sicherheit.aktiv = true` – heute mit der Anmeldung über die Login-Datenbank ✅, künftig zusätzlich `kundenschluessel` und `rollen` bzw. pro Ressource (Variante C).
+- [ ] Eigene Login-Datenbank (`LOGIN_DB_*`) mit einem MySQL-Benutzer, der dort nur `SELECT` darf, und ein zufälliges `TOKEN_SECRET` (mindestens 32 Zeichen).
 - [ ] `https` als Wächter aktivieren. Kundenschlüssel und Tokens dürfen nicht unverschlüsselt übertragen werden.
 - [ ] Schlüssel nur mit `bin/schluessel-erzeugen.php` erzeugen und nur als Hash in die `.env` schreiben.
 - [ ] Für jeden Kunden die kleinste passende Rolle vergeben.
@@ -1605,8 +1668,8 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 | Nicht enthalten | Grund | Stattdessen |
 |---|---|---|
 | Pflicht-Anmeldung | nicht benötigt | Standard offen, optional [SecurityCore](#securitycore-optional) |
-| Anmeldung mit Benutzername und Passwort | durch Kundenschlüssel und Token ersetzt | Wächter `kundenschluessel` + `token` |
-| Benutzerverwaltung (Konten-Datenbank) | Kunden stehen in der Config | `sicherheit.kunden` + `bin/schluessel-erzeugen.php` |
+| Benutzername und Passwort bei **jeder** Anfrage (Basic Auth) | Passwort ginge bei jeder Anfrage über das Netz, bcrypt kostet 50–100 ms pro Anfrage | einmal `POST /_login`, danach Token |
+| Konten über die API anlegen oder ändern | Kontenverwaltung ist Sache des Betreibers | Login-Tabelle in phpMyAdmin pflegen, Hash mit `bin/passwort-hash.php` |
 | Rollen ohne SecurityCore | ohne Identität keine Rolle | `aktionen` pro Ressource für alle gleich |
 | VMs / Container starten oder verwalten | nicht Teil des Projekts | Bereitstellung außerhalb der API |
 | Streaming großer Datenmengen | Einfachheit | Seiten mit `limit`/`offset` |
@@ -1678,12 +1741,13 @@ Sobald die API außerhalb eines geschützten Netzes erreichbar ist oder mehrere 
 - [ ] Debug-Header, Lasttest, Schätzwerte durch Messwerte ersetzen
 
 **SecurityCore (optional, unabhängig von Phase 3 und 4, setzt Phase 2 voraus)**
+- [x] **S0** (vorgezogen, ohne Phase 2) **Anmeldung mit der Login-Datenbank:** `POST /_login` mit Benutzername/E-Mail + Passwort, HMAC-Token mit Ablauf (`Authorization: Bearer`), Login-Datenbank über `LOGIN_DB_*` oder Fallback auf die Daten-Datenbank, Konto-Prüfung pro Anfrage, Login-Tabelle nie als Ressource, `bin/passwort-hash.php`, Client mit Anmeldeformular, Swagger mit Authorize. Global für alle Ressourcen.
 - [ ] **S1** Fundament: `Waechter`-Interface, `Kontext`/`Principal`, Einhängen im Kernel (aus = nichts laden), Variante C, Config-Prüfung (fail closed), `401`/`403`/`429`
 - [ ] **S2** `ip` (mit Proxy-Regel), `https`, `nurLesen`
 - [ ] **S3** `kundenschluessel`: konfigurierbarer Header + Präfix, Kunden mit Hash, `aktiv`-Schalter, CORS-Header, `Vary`, `bin/schluessel-erzeugen.php`
 - [ ] **S3b** **Eigene Datenbank pro Kunde:** `kunden.<name>.verbindung` (nur vom Betreiber vergeben, auch als Zuordnung für mehrere Backends), Ressourcen in der Datenbank des Kunden, `404` wenn die Tabelle dort fehlt, Prüfung beim Start. Setzt S3 und den `ConnectionManager` mit mehreren Verbindungen voraus.
 - [ ] **S4** `rollen`: Rechte pro Ressource, Schnittmenge mit `aktionen`, `404`/`403`, Hilfe, Übersicht und `/_openapi` nach Rolle filtern
-- [ ] **S5** `token`: `POST /_login`, HMAC-Token mit Ablauf, `nurToken`
+- [ ] **S5** `token` für Kundenschlüssel (für Konten schon mit S0 ✅): `POST /_login` mit Schlüssel, `nurToken`
 - [ ] **S6** `requestLimit` (wenn benötigt), `audit`
 
 ---

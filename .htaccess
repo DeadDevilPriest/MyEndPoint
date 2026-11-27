@@ -7,6 +7,9 @@
 
 RewriteEngine On
 
+# Header "Authorization" (Token der Anmeldung) an PHP weitergeben – nötig, falls PHP als FastCGI läuft
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
 # Interne Ordner und versteckte Pfade (.git, .idea, .env …) nie über das Web ausliefern → 403
 RewriteRule ^(config|cache|vendor|src|bin)(/|$) - [F,L]
 RewriteRule (^|/)\. - [F,L]

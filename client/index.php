@@ -33,13 +33,33 @@ $apiUrl = '../api.php';
         tbody tr:hover { background: #f1f5fb; }
         details { margin-top: 1rem; }
         pre { background: #f6f6f6; padding: .75rem; overflow-x: auto; font-size: .85rem; }
+        #login, #passwort { width: 100%; padding: .4rem; box-sizing: border-box; }
+        #angemeldet { display: flex; gap: 1rem; align-items: center; max-width: 520px; margin: 0 0 1rem; }
+        #angemeldet[hidden] { display: none; }
+        #angemeldet button { margin: 0 0 0 auto; padding: .3rem .8rem; }
     </style>
 </head>
 <body>
 
 <h1>Fahrzeugverwaltung</h1>
 
-<form id="formular">
+<!-- Anmeldung: nur sichtbar, wenn die API eine verlangt (sicherheit.aktiv in config/gateway.php) -->
+<form id="anmeldung" hidden>
+    <fieldset>
+        <label for="login">Benutzername oder E-Mail</label>
+        <input type="text" id="login" autocomplete="username" required>
+        <label for="passwort">Passwort</label>
+        <input type="password" id="passwort" autocomplete="current-password" required>
+        <button type="submit">Anmelden</button>
+    </fieldset>
+</form>
+
+<p id="angemeldet" hidden>
+    <span>Angemeldet als <strong id="wer"></strong></span>
+    <button type="button" id="abmelden">Abmelden</button>
+</p>
+
+<form id="formular" hidden>
     <fieldset>
         <label for="ressource">Tabelle</label>
         <select id="ressource"></select>
@@ -114,6 +134,7 @@ let felder     = {};          // Felder der gewählten Tabelle
 let pk         = null;        // Name des Primärschlüssels, meist "id"
 let auswahlen  = {};          // Fremdschlüssel: Spalte → Map(Wert → lesbarer Text)
 const geaendert = new Set();  // Felder, die seit dem letzten Laden geändert wurden
+let token      = '';          // nur bei aktiver Anmeldung: geht als "Authorization: Bearer …" mit
 
 const el = id => document.getElementById(id);
 const aktuelleOperation = () => document.querySelector('input[name=operation]:checked').value;
@@ -123,6 +144,7 @@ const aktuelleOperation = () => document.querySelector('input[name=operation]:ch
 // Schickt eine Anfrage und liefert Status, JSON und alles für die Detail-Anzeige
 async function anfrage(methode, pfad, daten = null) {
     const optionen = { method: methode, headers: {} };
+    if (token) optionen.headers['Authorization'] = 'Bearer ' + token;   // weist uns aus
     if (daten !== null) {
         optionen.headers['Content-Type'] = 'application/json';
         optionen.body = JSON.stringify(daten);
@@ -150,6 +172,9 @@ async function start() {
     } catch (fehler) {
         return verbindungsfehler(fehler);
     }
+    if (r.status === 401) {               // API verlangt eine Anmeldung (oder sie ist abgelaufen)
+        return anmeldungZeigen(token ? r : null);
+    }
     if (!r.ok || !r.json?.ressourcen) {
         return ergebnisZeigen({ ...r, ok: false,
             json: { fehler: r.json?.fehler ?? 'Unter dieser Adresse antwortet keine passende API.',
@@ -157,11 +182,59 @@ async function start() {
     }
     ressourcen = r.json.ressourcen;
 
+    // Angemeldet? Dann Name und E-Mail zeigen (die Übersicht meldet sie unter "angemeldet")
+    const konto = r.json.angemeldet;
+    el('wer').textContent   = konto ? `${konto.name} <${konto.email}>` : '';
+    el('angemeldet').hidden = !konto;
+    el('anmeldung').hidden  = true;
+    el('formular').hidden   = false;
+
+    el('ressource').replaceChildren();
     for (const name of Object.keys(ressourcen)) {
         el('ressource').add(new Option(beschriftungFuer(name), name));
     }
     el('ressource').value = 'fahrzeuge' in ressourcen ? 'fahrzeuge' : Object.keys(ressourcen)[0];
     await ressourceWechseln();
+}
+
+// Anmeldeformular zeigen; r = Antwort, deren Fehler angezeigt werden soll (z. B. "abgelaufen")
+function anmeldungZeigen(r = null) {
+    token = '';
+    tokenMerken('');
+    el('passwort').value    = '';
+    el('anmeldung').hidden  = false;
+    el('angemeldet').hidden = true;
+    el('formular').hidden   = true;
+    if (r) ergebnisZeigen(r); else el('ergebnis').hidden = true;
+}
+
+// POST api.php/_login → Token. Das Passwort geht nur hier über das Netz, danach nur noch der Token.
+async function anmelden() {
+    let r;
+    try {
+        r = await anfrage('POST', '/_login', { login: el('login').value.trim(), passwort: el('passwort').value });
+    } catch (fehler) {
+        return verbindungsfehler(fehler);
+    }
+    el('passwort').value = '';
+    if (!r.ok || !r.json?.token) {
+        return ergebnisZeigen(r);
+    }
+    token = r.json.token;
+    tokenMerken(token);
+    await start();
+}
+
+// Token nur für diesen Browser-Tab merken (sessionStorage), damit Neuladen nicht abmeldet.
+// Beim Schließen des Tabs ist er weg.
+function tokenLaden() {
+    try { return sessionStorage.getItem('token') ?? ''; } catch { return ''; }
+}
+function tokenMerken(wert) {
+    try {
+        if (wert) sessionStorage.setItem('token', wert);
+        else      sessionStorage.removeItem('token');
+    } catch { /* ohne Speicher geht es auch, dann nur ohne Merken */ }
 }
 
 // Andere Tabelle gewählt: Auswahllisten laden, Felder neu bauen
@@ -369,6 +442,7 @@ el('formular').addEventListener('submit', async (ereignis) => {
         return verbindungsfehler(fehler);
     }
 
+    if (r.status === 401) return anmeldungZeigen(r);   // Token abgelaufen oder Konto gelöscht
     ergebnisZeigen(r);
     if (!r.ok) return;
 
@@ -466,7 +540,11 @@ document.querySelectorAll('input[name=operation]')
 el('felder').addEventListener('input',  e => geaendert.add(e.target.name));
 el('felder').addEventListener('change', e => geaendert.add(e.target.name));
 el('leeren').addEventListener('click', () => { formularLeeren(); el('ergebnis').hidden = true; });
+el('anmeldung').addEventListener('submit', (ereignis) => { ereignis.preventDefault(); anmelden(); });
+el('abmelden').addEventListener('click', () => anmeldungZeigen());
 
+// Schon angemeldet (Seite neu geladen)? Dann den gemerkten Token mitschicken.
+token = tokenLaden();
 start();
 </script>
 </body>
